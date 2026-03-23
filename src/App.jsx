@@ -12,6 +12,23 @@ const fmt = (n, d = 0) => (parseFloat(n) || 0).toLocaleString("en-NG", { minimum
 const fmtN = (n) => `₦${fmt(n)}`;
 const normalizeAgencyName = (value = "") => value.trim().replace(/\s+/g, " ").toLowerCase();
 const normalizeAgencyCode = (value = "") => value.trim().toUpperCase().replace(/\s+/g, "");
+
+const findExistingAgencyByName = async (name = "") => {
+  const normalized = normalizeAgencyName(name);
+  if (!normalized) return null;
+  try {
+    const { data, error } = await supabase
+      .from("agencies")
+      .select("id, name, agency_code")
+      .ilike("name", name.trim())
+      .limit(10);
+    if (error) throw error;
+    return (data || []).find(agency => normalizeAgencyName(agency.name || "") === normalized) || null;
+  } catch (error) {
+    console.error("Failed to check for existing agency name:", error);
+    return null;
+  }
+};
 const MPO_ATTACHMENTS_BUCKET = "mpo-attachments";
 const sanitizeAttachmentFileName = (name = "file") => name.replace(/[^a-zA-Z0-9._-]+/g, "_");
 const uploadMpoAttachmentAndGetUrl = async ({ agencyId, mpoId, kind, file }) => {
@@ -40,18 +57,37 @@ const loadAppUserFromSupabase = async (authUser) => {
   let agencyName = "";
   let agencyCode = "";
   let agencyAddress = "";
+  let agencyEmail = "";
+  let agencyPhone = "";
   let agencyId = profile?.agency_id || null;
   if (profile?.agency_id) {
-    const { data: agency } = await supabase
+    let agency = null;
+    const primary = await supabase
       .from("agencies")
-      .select("name, agency_code, address")
+      .select("name, agency_code, address, email, phone")
       .eq("id", profile.agency_id)
-      .single();
+      .maybeSingle();
+
+    if (!primary.error) {
+      agency = primary.data;
+    } else {
+      const fallback = await supabase
+        .from("agencies")
+        .select("name, agency_code, address")
+        .eq("id", profile.agency_id)
+        .maybeSingle();
+      agency = fallback.data || null;
+    }
 
     agencyName = agency?.name || "";
     agencyCode = agency?.agency_code || "";
     agencyAddress = agency?.address || "";
+    agencyEmail = agency?.email || "";
+    agencyPhone = agency?.phone || "";
   }
+
+  const storedSignature = getStoredUserSignature(authUser.id);
+  const storedAgencyContact = getStoredAgencyContact(agencyId);
 
   return {
     id: authUser.id,
@@ -67,6 +103,9 @@ const loadAppUserFromSupabase = async (authUser) => {
     agencyId,
     agencyCode,
     agencyAddress,
+    agencyEmail: agencyEmail || authUser.user_metadata?.agency_email || storedAgencyContact.email || "",
+    agencyPhone: agencyPhone || authUser.user_metadata?.agency_phone || storedAgencyContact.phone || "",
+    signatureDataUrl: authUser.user_metadata?.signature_data_url || storedSignature || "",
     role: normalizeRole(profile?.role || "admin"),
     roleLabel: formatRoleLabel(profile?.role || "admin"),
   };
@@ -102,6 +141,14 @@ const ensureAgencyForUser = async (authUser) => {
 
   const agencyName = (authUser.user_metadata?.agency_name || "").trim();
   if (!agencyName) throw new Error("No agency invite code or agency name found for this user.");
+
+  const existingAgency = await findExistingAgencyByName(agencyName);
+  if (existingAgency) {
+    if ((authUser.user_metadata?.agency_mode || "") === "create") {
+      throw new Error("Agency already existing contact admin.");
+    }
+    return existingAgency.id;
+  }
 
   const { data, error } = await supabase.rpc("create_my_agency_with_code", {
     p_name: agencyName,
@@ -1035,6 +1082,58 @@ const getAllowedMpoStatusTargets = (user, mpo) => {
   return MPO_WORKFLOW_TRANSITIONS[role]?.[current] || [];
 };
 const mpoStatusNeedsNote = (status) => ["submitted", "reviewed", "approved", "rejected", "closed"].includes(String(status || "").toLowerCase());
+
+const MPO_WAITING_OWNER = {
+  draft: { label: "Planner / Buyer", roles: ["planner", "buyer", "admin"], color: "accent", hint: "Complete the MPO and submit it for finance review." },
+  submitted: { label: "Finance Review", roles: ["finance", "admin"], color: "blue", hint: "Finance should review rates, controls, and support notes." },
+  reviewed: { label: "Admin Approval", roles: ["admin"], color: "purple", hint: "Awaiting final leadership approval before dispatch." },
+  approved: { label: "Buyer / Planner Dispatch", roles: ["buyer", "planner", "admin"], color: "teal", hint: "Send the approved MPO to the vendor and confirm dispatch." },
+  rejected: { label: "Planner / Buyer Revision", roles: ["planner", "buyer", "admin"], color: "red", hint: "Apply requested changes, update the MPO, and resubmit." },
+  sent: { label: "Buyer / Planner Follow-up", roles: ["buyer", "planner", "admin"], color: "orange", hint: "Monitor airing and collect proofs from the vendor." },
+  aired: { label: "Finance Reconciliation", roles: ["finance", "admin"], color: "blue", hint: "Reconcile proof, invoice, and final payable." },
+  reconciled: { label: "Finance / Admin Close-out", roles: ["finance", "admin"], color: "green", hint: "Record final payment and close the MPO." },
+  closed: { label: "Completed", roles: [], color: "green", hint: "This MPO has completed the workflow." },
+};
+const getMpoWorkflowMeta = (mpo) => {
+  const current = String(mpo?.status || "draft").toLowerCase();
+  return MPO_WAITING_OWNER[current] || MPO_WAITING_OWNER.draft;
+};
+const isMpoAwaitingUser = (user, mpo) => {
+  if (!user || isArchived(mpo)) return false;
+  const current = String(mpo?.status || "draft").toLowerCase();
+  if (current === "closed") return false;
+  return getMpoWorkflowMeta(mpo).roles.includes(normalizeRole(user?.role));
+};
+const getWorkflowActionLabel = (currentStatus, targetStatus) => {
+  const current = String(currentStatus || "draft").toLowerCase();
+  const target = String(targetStatus || "").toLowerCase();
+  if (target === "submitted") return current === "rejected" ? "Resubmit MPO" : "Submit for Review";
+  if (target === "reviewed") return "Mark Reviewed";
+  if (target === "approved") return "Approve MPO";
+  if (target === "rejected") return ["submitted", "reviewed", "approved"].includes(current) ? "Request Changes" : "Reject MPO";
+  if (target === "sent") return "Send to Vendor";
+  if (target === "aired") return "Mark as Aired";
+  if (target === "reconciled") return current === "approved" ? "Move to Reconciliation" : "Mark Reconciled";
+  if (target === "closed") return "Close MPO";
+  return MPO_STATUS_LABELS[target] || target;
+};
+const getWorkflowActionVariant = (targetStatus) => {
+  const target = String(targetStatus || "").toLowerCase();
+  if (target === "approved" || target === "closed") return "success";
+  if (target === "reviewed" || target === "reconciled") return "blue";
+  if (target === "sent") return "purple";
+  if (target === "aired") return "secondary";
+  if (target === "rejected") return "danger";
+  return "ghost";
+};
+const getQuickWorkflowActions = (user, mpo) => {
+  const current = String(mpo?.status || "draft").toLowerCase();
+  return getAllowedMpoStatusTargets(user, mpo).map(target => ({
+    value: target,
+    label: getWorkflowActionLabel(current, target),
+    variant: getWorkflowActionVariant(target),
+  }));
+};
 const canEditMpoContent = (user, mpo) => {
   const role = normalizeRole(user?.role);
   if (role === "admin") return true;
@@ -1353,6 +1452,339 @@ const downloadJSON = (filename, payload) => {
   URL.revokeObjectURL(url);
 };
 
+const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+  try {
+    if (!file) return resolve("");
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read selected signature file."));
+    reader.readAsDataURL(file);
+  } catch (error) {
+    reject(error);
+  }
+});
+const themeKeyForUser = (userId) => userId ? `msp_theme_${userId}` : "msp_theme";
+const signatureKeyForUser = (userId) => userId ? `msp_signature_${userId}` : "msp_signature";
+const agencyContactKey = (agencyId) => agencyId ? `msp_agency_contact_${agencyId}` : "msp_agency_contact";
+const getStoredUserSignature = (userId) => store.get(signatureKeyForUser(userId), "") || "";
+const setStoredUserSignature = (userId, value = "") => {
+  if (!userId) return;
+  if (value) store.set(signatureKeyForUser(userId), value);
+  else store.del(signatureKeyForUser(userId));
+};
+const getStoredAgencyContact = (agencyId) => store.get(agencyContactKey(agencyId), { email: "", phone: "" }) || { email: "", phone: "" };
+const setStoredAgencyContact = (agencyId, contact = {}) => {
+  if (!agencyId) return;
+  store.set(agencyContactKey(agencyId), { email: contact?.email || "", phone: contact?.phone || "" });
+};
+const receivablesKeyForAgency = (agencyId) => agencyId ? `msp_receivables_${agencyId}` : "msp_receivables";
+const receivableSelect = `*, payments:receivable_payments(*)`;
+const isoToday = () => new Date().toISOString().slice(0, 10);
+const addDaysToIso = (isoDate = isoToday(), days = 0) => {
+  const base = isoDate ? new Date(`${isoDate}T00:00:00`) : new Date();
+  if (Number.isNaN(base.getTime())) return isoToday();
+  base.setDate(base.getDate() + Number(days || 0));
+  return base.toISOString().slice(0, 10);
+};
+const formatIsoDate = (isoDate) => {
+  if (!isoDate) return "—";
+  const parsed = new Date(`${isoDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleDateString("en-NG");
+};
+const looksLikeUuid = (value = "") => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || "").trim());
+const isLikelyMissingReceivablesSchema = (error) => {
+  const msg = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`.toLowerCase();
+  return ["42p01", "pgrst205", "pgrst116"].includes(String(error?.code || "").toLowerCase()) || ["receivables", "receivable_payments", "could not find", "relation", "schema cache", "column"].some(token => msg.includes(token));
+};
+const getReceivablesSyncMeta = (mode = "local", error = null) => ({
+  mode,
+  message: mode === "supabase"
+    ? "Native Supabase receivables sync is active with realtime updates."
+    : isLikelyMissingReceivablesSchema(error)
+      ? "Supabase receivables tables were not found, so the app is using the workspace local backup ledger."
+      : "Supabase receivables sync is unavailable right now, so the app is using the workspace local backup ledger.",
+  error: error?.message || "",
+});
+const getDaysPastDue = (isoDate, balance = 0) => {
+  if (!isoDate || (Number(balance) || 0) <= 0) return 0;
+  const due = new Date(`${isoDate}T00:00:00`);
+  const today = new Date(`${isoToday()}T00:00:00`);
+  if (Number.isNaN(due.getTime()) || Number.isNaN(today.getTime())) return 0;
+  const diff = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.max(diff, 0);
+};
+const normalizePaymentEntry = (payment = {}) => ({
+  id: payment.id || uid(),
+  amount: Number(payment.amount) || 0,
+  receivedAt: payment.receivedAt || payment.date || isoToday(),
+  reference: payment.reference || "",
+  channel: payment.channel || "bank_transfer",
+  note: payment.note || "",
+  createdAt: payment.createdAt || new Date().toISOString(),
+});
+const deriveReceivableStatus = (record = {}) => {
+  const requested = String(record.status || "").toLowerCase();
+  const grossAmount = Number(record.grossAmount ?? record.amount ?? 0) || 0;
+  const payments = Array.isArray(record.payments) ? record.payments.map(normalizePaymentEntry) : [];
+  const amountReceived = record.amountReceived != null ? (Number(record.amountReceived) || 0) : payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+  const balance = Math.max(grossAmount - amountReceived, 0);
+  if (requested === "write_off") return "write_off";
+  if (requested === "disputed") return "disputed";
+  if (requested === "draft") return "draft";
+  if (balance <= 0 && grossAmount > 0) return "paid";
+  if (amountReceived > 0) return getDaysPastDue(record.dueDate, balance) > 0 ? "overdue" : "part_paid";
+  if (getDaysPastDue(record.dueDate, balance) > 0 && grossAmount > 0) return "overdue";
+  return requested || (grossAmount > 0 ? "issued" : "draft");
+};
+const normalizeReceivableRecord = (record = {}) => {
+  const payments = Array.isArray(record.payments) ? record.payments.map(normalizePaymentEntry).sort((a, b) => new Date(b.receivedAt || b.createdAt || 0) - new Date(a.receivedAt || a.createdAt || 0)) : [];
+  const grossAmount = Number(record.grossAmount ?? record.amount ?? 0) || 0;
+  const amountReceived = record.amountReceived != null ? (Number(record.amountReceived) || 0) : payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+  const balance = Math.max(grossAmount - amountReceived, 0);
+  const status = deriveReceivableStatus({ ...record, grossAmount, amountReceived, payments });
+  return {
+    id: record.id || uid(),
+    mpoId: record.mpoId || "",
+    clientId: record.clientId || "",
+    campaignId: record.campaignId || "",
+    invoiceNo: record.invoiceNo || "",
+    invoiceDate: record.invoiceDate || isoToday(),
+    dueDate: record.dueDate || addDaysToIso(record.invoiceDate || isoToday(), 30),
+    grossAmount,
+    amountReceived,
+    balance,
+    status,
+    collectionStage: record.collectionStage || (status === "paid" ? "resolved" : "invoicing"),
+    owner: record.owner || "",
+    source: record.source || (record.mpoId ? "mpo" : "manual"),
+    notes: record.notes || "",
+    payments,
+    lastPaymentAt: record.lastPaymentAt || payments[0]?.receivedAt || "",
+    lastFollowUpAt: record.lastFollowUpAt || "",
+    createdAt: record.createdAt || new Date().toISOString(),
+    updatedAt: record.updatedAt || new Date().toISOString(),
+  };
+};
+const getStoredReceivables = (agencyId) => {
+  if (!agencyId) return [];
+  return (store.get(receivablesKeyForAgency(agencyId), []) || []).map(normalizeReceivableRecord);
+};
+const setStoredReceivables = (agencyId, items = []) => {
+  if (!agencyId) return;
+  store.set(receivablesKeyForAgency(agencyId), (items || []).map(normalizeReceivableRecord));
+};
+const mapReceivablePaymentRowFromSupabase = (payment = {}) => normalizePaymentEntry({
+  id: payment.id,
+  amount: payment.amount,
+  receivedAt: payment.received_at,
+  reference: payment.reference,
+  channel: payment.channel,
+  note: payment.note,
+  createdAt: payment.created_at,
+});
+const mapReceivableRowFromSupabase = (record = {}) => normalizeReceivableRecord({
+  id: record.id,
+  mpoId: record.mpo_id,
+  clientId: record.client_id,
+  campaignId: record.campaign_id,
+  invoiceNo: record.invoice_no,
+  invoiceDate: record.invoice_date,
+  dueDate: record.due_date,
+  grossAmount: record.gross_amount,
+  status: record.status,
+  collectionStage: record.collection_stage,
+  owner: record.owner,
+  source: record.source,
+  notes: record.notes,
+  payments: Array.isArray(record.payments) ? record.payments.map(mapReceivablePaymentRowFromSupabase) : [],
+  lastPaymentAt: record.last_payment_at,
+  lastFollowUpAt: record.last_follow_up_at,
+  createdAt: record.created_at,
+  updatedAt: record.updated_at,
+});
+const buildReceivablePayloadForSupabase = (record = {}, agencyId, userId, mode = "insert") => {
+  const normalized = normalizeReceivableRecord(record);
+  const payload = {
+    agency_id: agencyId,
+    mpo_id: normalized.mpoId || null,
+    client_id: normalized.clientId || null,
+    campaign_id: normalized.campaignId || null,
+    invoice_no: normalized.invoiceNo || null,
+    invoice_date: normalized.invoiceDate || isoToday(),
+    due_date: normalized.dueDate || addDaysToIso(normalized.invoiceDate || isoToday(), 30),
+    gross_amount: Number(normalized.grossAmount) || 0,
+    status: normalized.status,
+    collection_stage: normalized.collectionStage || (normalized.status === "paid" ? "resolved" : "invoicing"),
+    owner: normalized.owner || "",
+    source: normalized.source || (normalized.mpoId ? "mpo" : "manual"),
+    notes: normalized.notes || "",
+    last_payment_at: normalized.lastPaymentAt || null,
+    last_follow_up_at: normalized.lastFollowUpAt || null,
+    updated_at: new Date().toISOString(),
+  };
+  if (mode === "insert") {
+    payload.created_by = userId || null;
+    if (looksLikeUuid(normalized.id)) payload.id = normalized.id;
+  }
+  return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
+};
+const fetchReceivablesFromSupabase = async () => {
+  const { data, error } = await supabase
+    .from("receivables")
+    .select(receivableSelect)
+    .order("updated_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapReceivableRowFromSupabase);
+};
+const fetchReceivableByIdFromSupabase = async (receivableId) => {
+  const { data, error } = await supabase
+    .from("receivables")
+    .select(receivableSelect)
+    .eq("id", receivableId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapReceivableRowFromSupabase(data) : null;
+};
+const insertReceivableInSupabase = async (agencyId, userId, record) => {
+  const payload = buildReceivablePayloadForSupabase(record, agencyId, userId, "insert");
+  const { data, error } = await supabase
+    .from("receivables")
+    .insert([payload])
+    .select(receivableSelect)
+    .single();
+  if (error) throw error;
+  return mapReceivableRowFromSupabase(data);
+};
+const updateReceivableInSupabase = async (receivableId, record) => {
+  const payload = buildReceivablePayloadForSupabase(record, undefined, undefined, "update");
+  delete payload.agency_id;
+  const { data, error } = await supabase
+    .from("receivables")
+    .update(payload)
+    .eq("id", receivableId)
+    .select(receivableSelect)
+    .single();
+  if (error) throw error;
+  return mapReceivableRowFromSupabase(data);
+};
+const deleteReceivableInSupabase = async (receivableId) => {
+  const { error } = await supabase.from("receivables").delete().eq("id", receivableId);
+  if (error) throw error;
+  return true;
+};
+const insertReceivablePaymentInSupabase = async (agencyId, userId, receivableId, paymentInput = {}, currentRecord = {}) => {
+  const payment = normalizePaymentEntry(paymentInput);
+  const { error } = await supabase
+    .from("receivable_payments")
+    .insert([{
+      agency_id: agencyId,
+      receivable_id: receivableId,
+      amount: payment.amount,
+      received_at: payment.receivedAt,
+      reference: payment.reference || null,
+      channel: payment.channel || "bank_transfer",
+      note: payment.note || null,
+      created_by: userId || null,
+    }]);
+  if (error) throw error;
+
+  const nextRecord = normalizeReceivableRecord({
+    ...currentRecord,
+    payments: [payment, ...((currentRecord?.payments || []).map(normalizePaymentEntry))],
+    lastPaymentAt: payment.receivedAt,
+    lastFollowUpAt: payment.receivedAt,
+    updatedAt: new Date().toISOString(),
+  });
+
+  const { error: updateError } = await supabase
+    .from("receivables")
+    .update({
+      status: nextRecord.status,
+      collection_stage: nextRecord.status === "paid" ? "resolved" : nextRecord.collectionStage,
+      last_payment_at: payment.receivedAt,
+      last_follow_up_at: payment.receivedAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", receivableId);
+  if (updateError) throw updateError;
+
+  return await fetchReceivableByIdFromSupabase(receivableId);
+};
+const updateReceivableStatusInSupabase = async (receivableId, updates = {}) => {
+  const payload = {
+    status: updates.status,
+    collection_stage: updates.collectionStage,
+    last_follow_up_at: updates.lastFollowUpAt ?? undefined,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from("receivables")
+    .update(Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined)))
+    .eq("id", receivableId)
+    .select(receivableSelect)
+    .single();
+  if (error) throw error;
+  return mapReceivableRowFromSupabase(data);
+};
+const buildReceivableFromMpo = ({ mpo, campaign, client, owner = "" }) => {
+  const grossAmount = Number(mpo?.reconciledAmount) || Number(mpo?.invoiceAmount) || Number(mpo?.grandTotal) || Number(mpo?.netVal) || 0;
+  const invoiceDate = isoToday();
+  return normalizeReceivableRecord({
+    id: uid(),
+    mpoId: mpo?.id || "",
+    clientId: client?.id || campaign?.clientId || "",
+    campaignId: campaign?.id || mpo?.campaignId || "",
+    invoiceNo: mpo?.invoiceNo || `AR-${String(mpo?.mpoNo || uid()).replace(/\s+/g, "-")}`,
+    invoiceDate,
+    dueDate: addDaysToIso(invoiceDate, 30),
+    grossAmount,
+    status: grossAmount > 0 ? "issued" : "draft",
+    collectionStage: "invoicing",
+    owner,
+    source: "mpo",
+    notes: mpo?.reconciliationNotes ? `Closeout note: ${mpo.reconciliationNotes}` : `Created from ${mpo?.mpoNo || "MPO"}`,
+    payments: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+};
+const persistSignatureForUser = async (currentUser, signatureDataUrl = "") => {
+  setStoredUserSignature(currentUser?.id, signatureDataUrl || "");
+  try {
+    const { error } = await supabase.auth.updateUser({ data: { signature_data_url: signatureDataUrl || "" } });
+    if (error) throw error;
+  } catch (error) {
+    console.error("Failed to persist signature metadata:", error);
+  }
+  return signatureDataUrl || "";
+};
+const loadBrowserScript = (src, readyCheck) => new Promise((resolve, reject) => {
+  try {
+    const ready = typeof readyCheck === "function" ? readyCheck() : readyCheck;
+    if (ready) return resolve(ready);
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve(typeof readyCheck === "function" ? readyCheck() : readyCheck), { once: true });
+      existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve(typeof readyCheck === "function" ? readyCheck() : readyCheck);
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  } catch (error) {
+    reject(error);
+  }
+});
+const loadPreviewPdfLibraries = async () => {
+  await loadBrowserScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", () => window.html2canvas);
+  await loadBrowserScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js", () => window.jspdf?.jsPDF);
+  return { html2canvas: window.html2canvas, jsPDF: window.jspdf.jsPDF };
+};
+
 const DEFAULT_SESSION_HOURS = 8;
 const DEFAULT_APP_SETTINGS = {
   vatRate: 7.5,
@@ -1387,7 +1819,6 @@ const fetchAppSettingsFromSupabase = async (agencyId) => {
     roundToWholeNaira: data?.round_to_whole_naira ?? DEFAULT_APP_SETTINGS.roundToWholeNaira,
     sessionHours: data?.session_hours ?? DEFAULT_APP_SETTINGS.sessionHours,
     mpoTerms: Array.isArray(data?.mpo_terms) ? data.mpo_terms : DEFAULT_APP_SETTINGS.mpoTerms,
-    themePreference: data?.theme_preference || undefined,
   });
 };
 
@@ -1399,7 +1830,6 @@ const saveAppSettingsToSupabase = async (agencyId, settings) => {
     round_to_whole_naira: !!settings?.roundToWholeNaira,
     session_hours: Math.max(1, Number(settings?.sessionHours) || DEFAULT_APP_SETTINGS.sessionHours),
     mpo_terms: Array.isArray(settings?.mpoTerms) ? settings.mpoTerms : DEFAULT_APP_SETTINGS.mpoTerms,
-    theme_preference: settings?.themePreference || null,
   };
   const { data, error } = await supabase
     .from("app_settings")
@@ -1412,7 +1842,6 @@ const saveAppSettingsToSupabase = async (agencyId, settings) => {
     roundToWholeNaira: data?.round_to_whole_naira,
     sessionHours: data?.session_hours,
     mpoTerms: Array.isArray(data?.mpo_terms) ? data.mpo_terms : DEFAULT_APP_SETTINGS.mpoTerms,
-    themePreference: data?.theme_preference || undefined,
   });
 };
 
@@ -1422,6 +1851,8 @@ const updateProfileInSupabase = async (currentUser, form) => {
     title: form.title || "",
     phone: form.phone || "",
   };
+  const nextSignature = form.signatureDataUrl || "";
+  setStoredUserSignature(currentUser?.id, nextSignature);
   const authPayload = {
     data: {
       full_name: payload.full_name,
@@ -1429,6 +1860,9 @@ const updateProfileInSupabase = async (currentUser, form) => {
       phone: payload.phone,
       agency_name: currentUser.agency || "",
       agency_code: currentUser.agencyCode || "",
+      agency_email: currentUser.agencyEmail || "",
+      agency_phone: currentUser.agencyPhone || "",
+      signature_data_url: nextSignature,
     },
   };
   if (form.email && form.email !== currentUser.email) authPayload.email = form.email;
@@ -1445,25 +1879,63 @@ const updateProfileInSupabase = async (currentUser, form) => {
     title: payload.title,
     phone: payload.phone,
     email: form.email || currentUser.email || "",
+    signatureDataUrl: nextSignature,
   };
 };
 
 const updateAgencyInSupabase = async (agencyId, form) => {
   if (!agencyId) throw new Error("No agency found for this workspace.");
-  const { data, error } = await supabase
+
+  const fallbackContact = { email: form.email || "", phone: form.phone || "" };
+  let data = null;
+  const primary = await supabase
     .from("agencies")
     .update({
       name: form.agency?.trim() || "My Agency",
       address: form.address || null,
+      email: form.email || null,
+      phone: form.phone || null,
     })
     .eq("id", agencyId)
-    .select("id, name, address, agency_code")
-    .single();
-  if (error) throw error;
+    .select("id, name, address, agency_code, email, phone")
+    .maybeSingle();
+
+  if (!primary.error) {
+    data = primary.data;
+  } else {
+    const fallback = await supabase
+      .from("agencies")
+      .update({
+        name: form.agency?.trim() || "My Agency",
+        address: form.address || null,
+      })
+      .eq("id", agencyId)
+      .select("id, name, address, agency_code")
+      .single();
+    if (fallback.error) throw fallback.error;
+    data = fallback.data;
+  }
+
+  setStoredAgencyContact(agencyId, fallbackContact);
+  try {
+    await supabase.auth.updateUser({
+      data: {
+        agency_name: data?.name || form.agency || "My Agency",
+        agency_code: data?.agency_code || "",
+        agency_email: data?.email || fallbackContact.email || "",
+        agency_phone: data?.phone || fallbackContact.phone || "",
+      },
+    });
+  } catch (error) {
+    console.error("Failed to update agency contact metadata:", error);
+  }
+
   return {
     agency: data?.name || form.agency || "My Agency",
     agencyAddress: data?.address || "",
     agencyCode: data?.agency_code || "",
+    agencyEmail: data?.email || fallbackContact.email || "",
+    agencyPhone: data?.phone || fallbackContact.phone || "",
   };
 };
 
@@ -1539,11 +2011,15 @@ const sanitizeMPOForExport = (mpo) => ({
   brand: escapeHtml(safeText(mpo?.brand)),
   campaignName: escapeHtml(safeText(mpo?.campaignName)),
   agencyAddress: escapeHtml(safeText(mpo?.agencyAddress)),
+  agencyEmail: escapeHtml(safeText(mpo?.agencyEmail)),
+  agencyPhone: escapeHtml(safeText(mpo?.agencyPhone)),
   signedBy: escapeHtml(safeText(mpo?.signedBy)),
   signedTitle: escapeHtml(safeText(mpo?.signedTitle)),
+  signedSignature: mpo?.signedSignature || "",
   preparedBy: escapeHtml(safeText(mpo?.preparedBy)),
   preparedContact: escapeHtml(safeText(mpo?.preparedContact)),
   preparedTitle: escapeHtml(safeText(mpo?.preparedTitle)),
+  preparedSignature: mpo?.preparedSignature || "",
   medium: escapeHtml(safeText(mpo?.medium)),
   surchLabel: escapeHtml(safeText(mpo?.surchLabel)),
   transmitMsg: escapeHtml(safeText(mpo?.transmitMsg)),
@@ -1558,8 +2034,8 @@ const sanitizeMPOForExport = (mpo) => ({
     scheduleMonth: escapeHtml(safeText(s?.scheduleMonth)),
   })),
 });
-const getDefaultTheme = () => {
-  const saved = store.get("msp_theme", null);
+const getDefaultTheme = (userId = null) => {
+  const saved = store.get(themeKeyForUser(userId), null);
   if (saved === "light" || saved === "dark") return saved;
   return window?.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
 };
@@ -1635,13 +2111,17 @@ const GlobalStyle = ({ theme }) => (
       --text:#e8ecf4;--text2:#8b93a7;--text3:#4f576b;
       ` : `
       --bg:#f0f2f7;--bg2:#ffffff;--bg3:#f5f7fc;--bg4:#e8ecf4;
-      --border:rgba(0,0,0,0.08);--border2:rgba(0,0,0,0.14);
-      --text:#111827;--text2:#4b5563;--text3:#9ca3af;
+      --border:rgba(15,23,42,0.08);--border2:rgba(15,23,42,0.14);
+      --text:#0f172a;--text2:#475467;--text3:#667085;
       `}
       --accent:#f0a500;--blue:#3b7ef5;--green:#16a34a;
       --red:#ef4444;--purple:#8b5cf6;--teal:#0d9488;--orange:#f97316;
     }
     html,body,#root{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
+    h1,h2,h3,h4,h5,h6,strong,th{color:var(--text)}
+    p,span,label,td,li,small{color:inherit}
+    input::placeholder,textarea::placeholder{color:var(--text3);opacity:1}
+    select,option,input,textarea{color:var(--text)}
     *{scrollbar-width:thin;scrollbar-color:var(--bg4) transparent}
     ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
     input,select,textarea,button{font-family:inherit}
@@ -1730,8 +2210,22 @@ const AttachmentField = ({ label, url, onUrlChange, onFileSelected, uploading, a
   </div>
 );
 
-const Card = ({ children, style, glow }) => (
-  <div style={{ background: "var(--bg2)", border: `1px solid ${glow ? "rgba(240,165,0,.25)" : "var(--border)"}`, borderRadius: 14, padding: 22, boxShadow: glow ? "0 0 28px rgba(240,165,0,.07)" : "0 2px 12px rgba(0,0,0,.3)", ...style }}>
+const Card = ({ children, style, glow, hoverable = true }) => (
+  <div
+    style={{ background: "var(--bg2)", border: `1px solid ${glow ? "rgba(240,165,0,.25)" : "var(--border)"}`, borderRadius: 14, padding: 22, boxShadow: glow ? "0 0 28px rgba(240,165,0,.07)" : "0 2px 12px rgba(0,0,0,.3)", transition: hoverable ? "transform .16s ease, box-shadow .16s ease, border-color .16s ease" : "none", minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word", ...style }}
+    onMouseEnter={e => {
+      if (!hoverable) return;
+      e.currentTarget.style.transform = "translateY(-2px)";
+      e.currentTarget.style.boxShadow = glow ? "0 10px 28px rgba(240,165,0,.14)" : "0 10px 24px rgba(0,0,0,.14)";
+      e.currentTarget.style.borderColor = "rgba(240,165,0,.22)";
+    }}
+    onMouseLeave={e => {
+      if (!hoverable) return;
+      e.currentTarget.style.transform = "translateY(0)";
+      e.currentTarget.style.boxShadow = glow ? "0 0 28px rgba(240,165,0,.07)" : "0 2px 12px rgba(0,0,0,.3)";
+      e.currentTarget.style.borderColor = glow ? "rgba(240,165,0,.25)" : "var(--border)";
+    }}
+  >
     {children}
   </div>
 );
@@ -1739,7 +2233,7 @@ const Card = ({ children, style, glow }) => (
 const Badge = ({ children, color = "accent" }) => {
   const map = { accent: ["rgba(240,165,0,.15)", "var(--accent)"], green: ["rgba(34,197,94,.15)", "var(--green)"], blue: ["rgba(59,126,245,.15)", "var(--blue)"], red: ["rgba(239,68,68,.15)", "var(--red)"], purple: ["rgba(139,92,246,.15)", "var(--purple)"], teal: ["rgba(20,184,166,.15)", "var(--teal)"], orange: ["rgba(249,115,22,.15)", "var(--orange)"] };
   const [bg, fg] = map[color] || map.accent;
-  return <span style={{ background: bg, color: fg, padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 600, fontFamily: "'Syne',sans-serif", whiteSpace: "nowrap" }}>{children}</span>;
+  return <span style={{ background: bg, color: fg, padding: "3px 10px", borderRadius: 99, fontSize: 10, fontWeight: 600, fontFamily: "'Syne',sans-serif", whiteSpace: "normal", maxWidth: "100%", textAlign: "center", lineHeight: 1.25 }}>{children}</span>;
 };
 
 const Modal = ({ title, children, onClose, width = 540 }) => (
@@ -1769,12 +2263,30 @@ const Empty = ({ icon, title, sub }) => (
   </div>
 );
 
-const Stat = ({ label, value, sub, color = "var(--accent)", icon }) => (
-  <Card style={{ position: "relative", overflow: "hidden" }}>
-    <div style={{ position: "absolute", top: -16, right: -12, fontSize: 72, opacity: .04 }}>{icon}</div>
-    <div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 7 }}>{label}</div>
-    <div style={{ fontSize: 30, fontWeight: 800, fontFamily: "'Syne',sans-serif", color }}>{value}</div>
-    {sub && <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 4 }}>{sub}</div>}
+const Stat = ({ label, value, sub, color = "var(--accent)", icon, valueSize = "clamp(18px, 2.25vw, 26px)" }) => (
+  <Card hoverable style={{ position: "relative", overflow: "hidden", minWidth: 0, padding: "18px 20px" }}>
+    <div style={{ position: "absolute", top: -16, right: -12, fontSize: 72, opacity: .04, pointerEvents: "none" }}>{icon}</div>
+    <div style={{ fontSize: 11, color: "var(--text2)", fontWeight: 800, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10, lineHeight: 1.2 }}>{label}</div>
+    <div
+      title={String(value ?? "")}
+      style={{
+        fontSize: valueSize,
+        lineHeight: 1.08,
+        fontWeight: 800,
+        fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        fontVariantNumeric: "tabular-nums",
+        letterSpacing: "-0.04em",
+        color,
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {value}
+    </div>
+    {sub && <div style={{ fontSize: 11, color: "var(--text2)", opacity: 0.92, marginTop: 10, lineHeight: 1.45, overflowWrap: "anywhere" }}>{sub}</div>}
   </Card>
 );
 
@@ -1804,8 +2316,40 @@ const AuthPage = ({ onLogin }) => {
   });
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [existingAgencyMatch, setExistingAgencyMatch] = useState(null);
+  const [agencyCheckLoading, setAgencyCheckLoading] = useState(false);
 
   const u = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    let active = true;
+    const checkAgency = async () => {
+      if (mode !== "register" || f.agencyMode !== "create" || !f.agency.trim()) {
+        if (active) {
+          setExistingAgencyMatch(null);
+          setAgencyCheckLoading(false);
+        }
+        return;
+      }
+
+      setAgencyCheckLoading(true);
+      try {
+        const match = await findExistingAgencyByName(f.agency.trim());
+        if (active) setExistingAgencyMatch(match || null);
+      } catch (error) {
+        console.error("Failed to validate agency name during signup:", error);
+        if (active) setExistingAgencyMatch(null);
+      } finally {
+        if (active) setAgencyCheckLoading(false);
+      }
+    };
+
+    const timer = setTimeout(checkAgency, 250);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [mode, f.agencyMode, f.agency]);
 
   const submit = async () => {
     setErr("");
@@ -1816,6 +2360,9 @@ const AuthPage = ({ onLogin }) => {
       }
       if (f.agencyMode === "create" && !f.agency.trim()) {
         return setErr("Agency name is required when creating a new agency.");
+      }
+      if (f.agencyMode === "create" && existingAgencyMatch) {
+        return setErr("Agency already existing contact admin.");
       }
       if (f.agencyMode === "join" && !normalizeAgencyCode(f.agencyCode)) {
         return setErr("Agency invite code is required when joining an existing agency.");
@@ -1956,7 +2503,7 @@ const AuthPage = ({ onLogin }) => {
           <p style={{ color: "var(--text2)", marginTop: 7, fontSize: 14 }}>
             {mode === "login"
               ? "Sign in to your agency workspace"
-              : "Create an account and either create or join an agency"}
+              : "Create an account and either create a brand-new agency or join an existing one"}
           </p>
         </div>
 
@@ -1980,33 +2527,49 @@ const AuthPage = ({ onLogin }) => {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <button
                     type="button"
-                    onClick={() => setF(p => ({ ...p, agencyMode: "create", agencyCode: p.agencyCode || "" }))}
+                    onClick={() => { setErr(""); setExistingAgencyMatch(null); setF(p => ({ ...p, agencyMode: "create", agencyCode: p.agencyCode || "" })); }}
                     style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "create" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "create" ? "rgba(240,165,0,.12)" : "var(--bg3)", color: f.agencyMode === "create" ? "var(--accent)" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
                   >
                     Create New Agency
                   </button>
                   <button
                     type="button"
-                    onClick={() => setF(p => ({ ...p, agencyMode: "join", agency: p.agency || "" }))}
+                    onClick={() => { setErr(""); setF(p => ({ ...p, agencyMode: "join", agency: p.agency || "" })); }}
                     style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "join" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "join" ? "rgba(240,165,0,.12)" : "var(--bg3)", color: f.agencyMode === "join" ? "var(--accent)" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
                   >
                     Join With Invite Code
                   </button>
                 </div>
                 {f.agencyMode === "create" ? (
-                  <Field
-                    label="Agency Name"
-                    value={f.agency}
-                    onChange={u("agency")}
-                    placeholder="Apex Media Ltd"
-                    required
-                    note="You will get an invite code to share with teammates after signup."
-                  />
+                  <>
+                    <Field
+                      label="Agency Name"
+                      value={f.agency}
+                      onChange={value => {
+                        setErr("");
+                        u("agency")(value);
+                      }}
+                      placeholder="Apex Media Ltd"
+                      required
+                      note={agencyCheckLoading ? "Checking whether this agency already exists..." : "Only use Create New Agency for a brand-new workspace."}
+                    />
+                    {existingAgencyMatch ? (
+                      <div style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.28)", borderRadius: 10, padding: "11px 13px", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700 }}>This agency already exists</div>
+                        <div style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.5 }}>
+                          <strong style={{ color: "var(--text)" }}>{existingAgencyMatch.name}</strong> already has a workspace. Agency already existing contact admin.
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
                   <Field
                     label="Agency Invite Code"
                     value={f.agencyCode}
-                    onChange={u("agencyCode")}
+                    onChange={value => {
+                      setErr("");
+                      u("agencyCode")(value);
+                    }}
                     placeholder="QVT-7K4P"
                     required
                     note="Ask your agency admin for the invite code."
@@ -2068,10 +2631,11 @@ const AuthPage = ({ onLogin }) => {
             <Btn
               size="lg"
               onClick={submit}
-              loading={loading}
+              loading={loading || (mode === "register" && f.agencyMode === "create" && agencyCheckLoading)}
+              disabled={mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch}
               style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
             >
-              {mode === "login" ? "Sign In →" : "Create Account →"}
+              {mode === "login" ? "Sign In →" : (existingAgencyMatch && f.agencyMode === "create" ? "Already Existing Contact Admin" : "Create Account →")}
             </Btn>
 
             <p style={{ textAlign: "center", color: "var(--text2)", fontSize: 13 }}>
@@ -2108,6 +2672,7 @@ const Sidebar = ({ page, setPage, user, onLogout, collapsed, setCollapsed, theme
     { id: "clients",   icon: "👥", label: "Clients & Brands" },
     { id: "campaigns", icon: "📢", label: "Campaigns" },
     { id: "rates",     icon: "💰", label: "Media Rates" },
+    { id: "finance",   icon: "💳", label: "Finance" },
     { id: "mpo",       icon: "📄", label: "MPO Generator" },
     { id: "reports",   icon: "📊", label: "Reports" },
     { id: "settings",  icon: "⚙️", label: "Settings", badge: unreadNotifications },
@@ -2150,6 +2715,58 @@ const Sidebar = ({ page, setPage, user, onLogout, collapsed, setCollapsed, theme
   );
 };
 
+
+const TopRightNotificationsButton = ({ count = 0, onClick }) => (
+  <button
+    onClick={onClick}
+    title="Workspace alerts"
+    style={{
+      position: "fixed",
+      top: 18,
+      right: 22,
+      zIndex: 80,
+      width: 46,
+      height: 46,
+      borderRadius: 999,
+      border: "1px solid var(--border2)",
+      background: "var(--bg2)",
+      color: "var(--text)",
+      boxShadow: "0 12px 28px rgba(0,0,0,.18)",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 19,
+      transition: "transform .16s ease, box-shadow .16s ease",
+    }}
+    onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 16px 34px rgba(0,0,0,.22)"; }}
+    onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 12px 28px rgba(0,0,0,.18)"; }}
+  >
+    🔔
+    {count > 0 && (
+      <span style={{
+        position: "absolute",
+        top: -4,
+        right: -4,
+        minWidth: 20,
+        height: 20,
+        borderRadius: 999,
+        padding: "0 6px",
+        background: "var(--accent)",
+        color: "#111",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 10,
+        fontWeight: 800,
+        fontFamily: "'Syne',sans-serif",
+      }}>
+        {count > 99 ? "99+" : count}
+      </span>
+    )}
+  </button>
+);
+
 /* ── DASHBOARD ──────────────────────────────────────────── */
 const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notifications, unreadNotifications, setPage, onOpenNotifications }) => {
   const liveVendors = activeOnly(vendors);
@@ -2163,6 +2780,9 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
   const pendingPaymentCount = liveMpos.filter(m => ["received", "approved", "disputed"].includes(m.invoiceStatus || "pending") && (m.paymentStatus || "unpaid") !== "paid").length;
   const pendingProofCount = liveMpos.filter(m => !["received"].includes(m.proofStatus || "pending")).length;
   const recent = [...liveMpos].sort((a, b) => b.createdAt - a.createdAt).slice(0, 4);
+  const myWorkflowQueue = [...liveMpos].filter(m => isMpoAwaitingUser(user, m)).sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)).slice(0, 4);
+  const readyForDispatch = liveMpos.filter(m => String(m.status || "draft").toLowerCase() === "approved").length;
+  const needsRevision = liveMpos.filter(m => String(m.status || "draft").toLowerCase() === "rejected").length;
   const recentNotifications = (notifications || []).slice(0, 5);
   const topVendors = Object.values(liveMpos.reduce((acc, mpo) => {
     const key = mpo.vendorName || "Unknown Vendor";
@@ -2185,6 +2805,7 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
         <Stat icon="📄" label="MPOs Issued" value={liveMpos.length} sub={`${pendingApprovals} pending approval`} color="var(--purple)" />
         <Stat icon="💰" label="MPO Value" value={`₦${(totalMPOValue / 1e6).toFixed(1)}M`} sub={`Budget pool ${fmtN(totalBudget)}`} color="var(--teal)" />
         <Stat icon="🔔" label="Unread Alerts" value={unreadNotifications} sub={`${pendingPaymentCount} awaiting payment`} color="var(--orange)" />
+        <Stat icon="✅" label="My Queue" value={myWorkflowQueue.length} sub={`${readyForDispatch} approved · ${needsRevision} need changes`} color="var(--blue)" />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr .95fr", gap: 18 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -2249,6 +2870,29 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
           </Card>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>My Workflow Queue</h2>
+              <Btn variant="ghost" size="sm" onClick={() => setPage("mpo")}>Open MPOs →</Btn>
+            </div>
+            {myWorkflowQueue.length === 0 ? <Empty icon="✅" title="Nothing waiting on you" sub="Approvals and dispatch work assigned to your role will appear here." /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {myWorkflowQueue.map(mpo => {
+                  const workflowMeta = getMpoWorkflowMeta(mpo);
+                  return (
+                    <button key={mpo.id} onClick={() => setPage("mpo")} style={{ textAlign: "left", border: "1px solid var(--border)", background: "var(--bg3)", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{mpo.mpoNo || "MPO"} · {mpo.vendorName || "Vendor"}</div>
+                        <Badge color={workflowMeta.color}>Waiting on you</Badge>
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 5 }}>{workflowMeta.hint}</div>
+                      <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 7 }}>{MPO_STATUS_LABELS[mpo.status || "draft"] || (mpo.status || "draft")} · {mpo.clientName || "No client"}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
           <Card>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Notifications</h2>
@@ -3025,7 +3669,7 @@ const RatesPage = ({ rates, setRates, vendors, clients, campaigns, user }) => {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 800 }}>
             <thead><tr style={{ background: "var(--bg3)" }}>
-              {["Vendor","Programme","Time Belt","Type","Dur","Rate/Spot","Disc%","Comm%","Net Rate",""].map(h => <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}
+              {["Vendor","Programme","Time Belt","Type","Dur","Rate/Spot","Disc%","Comm%","Net Rate",""].map(h => <th key={h} style={{ padding: "7px 9px", textAlign: "left", fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {filtered.map((r, i) => {
@@ -3035,15 +3679,15 @@ const RatesPage = ({ rates, setRates, vendors, clients, campaigns, user }) => {
                   <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}
                     onMouseEnter={e => e.currentTarget.style.background = "var(--bg3)"}
                     onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)"}>
-                    <td style={{ padding: "11px 12px", fontWeight: 600 }}>{vn}</td>
-                    <td style={{ padding: "11px 12px", color: "var(--text2)" }}>{r.programme || "—"}</td>
-                    <td style={{ padding: "11px 12px", color: "var(--text2)" }}>{r.timeBelt || "—"}</td>
-                    <td style={{ padding: "11px 12px" }}><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><Badge color="blue">{r.mediaType || "—"}</Badge>{isArchived(r) && <Badge color="red">Archived</Badge>}</div></td>
-                    <td style={{ padding: "11px 12px", color: "var(--text2)" }}>{r.duration}"</td>
-                    <td style={{ padding: "11px 12px", fontWeight: 600, color: "var(--accent)" }}>{fmtN(r.ratePerSpot)}</td>
+                    <td style={{ padding: "8px 9px", fontWeight: 600, fontSize: 12 }}>{vn}</td>
+                    <td style={{ padding: "8px 9px", color: "var(--text2)", fontSize: 12 }}>{r.programme || "—"}</td>
+                    <td style={{ padding: "8px 9px", color: "var(--text2)", fontSize: 12 }}>{r.timeBelt || "—"}</td>
+                    <td style={{ padding: "8px 9px", fontSize: 12 }}><div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}><Badge color="blue">{r.mediaType || "—"}</Badge>{isArchived(r) && <Badge color="red">Archived</Badge>}</div></td>
+                    <td style={{ padding: "8px 9px", color: "var(--text2)", fontSize: 12 }}>{r.duration}"</td>
+                    <td style={{ padding: "8px 9px", fontWeight: 600, fontSize: 12, color: "var(--accent)" }}>{fmtN(r.ratePerSpot)}</td>
                     <td style={{ padding: "11px 12px", color: "var(--red)" }}>{r.discount || 0}%</td>
                     <td style={{ padding: "11px 12px", color: "var(--red)" }}>{r.commission || 0}%</td>
-                    <td style={{ padding: "11px 12px", fontWeight: 700, color: "var(--green)" }}>{fmtN(net)}</td>
+                    <td style={{ padding: "8px 9px", fontWeight: 700, color: "var(--green)", fontSize: 12 }}>{fmtN(net)}</td>
                     <td style={{ padding: "11px 12px" }}>
                       <div style={{ display: "flex", gap: 5 }}>
                         {canManage && <Btn variant="ghost" size="sm" onClick={() => openEdit(r)}>✏️</Btn>}
@@ -3486,13 +4130,16 @@ const buildMPOPdf = (mpo) => {
 const PrintPreview = ({ html, csv, pdfBytes, title, onClose }) => {
   const [tab, setTab]       = useState("preview");
   const [copied, setCopied] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const iframeRef           = useRef(null);
 
   const handlePrint = () => {
     iframeRef.current?.contentWindow?.postMessage("print-mpo", "*");
   };
 
-  const handleDownloadPDF = () => {
+  const safeName = t => (t || "MPO").replace(/[^a-z0-9\-_. ]/gi, "_").slice(0, 80);
+
+  const downloadFallbackPdf = () => {
     if (!pdfBytes) return;
     const blob = new Blob([pdfBytes], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
@@ -3503,6 +4150,61 @@ const PrintPreview = ({ html, csv, pdfBytes, title, onClose }) => {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1500);
+  };
+
+  const handleDownloadPDF = async () => {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      const iframe = iframeRef.current;
+      const doc = iframe?.contentDocument;
+      const body = doc?.body;
+      const root = doc?.documentElement;
+      if (!doc || !body || !root) {
+        downloadFallbackPdf();
+        return;
+      }
+
+      const { html2canvas, jsPDF } = await loadPreviewPdfLibraries();
+      await new Promise(resolve => setTimeout(resolve, 160));
+      const targetWidth = Math.max(body.scrollWidth, root.scrollWidth, iframe.clientWidth || 0);
+      const targetHeight = Math.max(body.scrollHeight, root.scrollHeight, iframe.clientHeight || 0);
+      const canvas = await html2canvas(body, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        windowWidth: targetWidth,
+        windowHeight: targetHeight,
+        width: targetWidth,
+        height: targetHeight,
+        scrollX: 0,
+        scrollY: 0,
+      });
+
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgData = canvas.toDataURL("image/png");
+      const imgWidth = pageWidth;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 0;
+
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight, undefined, "FAST");
+      heightLeft -= pageHeight;
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight, undefined, "FAST");
+        heightLeft -= pageHeight;
+      }
+      pdf.save(`${safeName(title)}.pdf`);
+    } catch (error) {
+      console.error("Exact preview PDF export failed:", error);
+      downloadFallbackPdf();
+    } finally {
+      setPdfBusy(false);
+    }
   };
 
   const handleDownloadHTML = () => {
@@ -3535,8 +4237,6 @@ const PrintPreview = ({ html, csv, pdfBytes, title, onClose }) => {
     });
   };
 
-  const safeName = t => (t || "MPO").replace(/[^a-z0-9\-_. ]/gi, "_").slice(0, 80);
-
   const btnStyle = (bg, color, border) => ({
     display:"flex", alignItems:"center", gap:6, padding:"7px 16px",
     background:bg, color, border:`1px solid ${border}`, borderRadius:8,
@@ -3553,7 +4253,7 @@ const PrintPreview = ({ html, csv, pdfBytes, title, onClose }) => {
           ))}
         </div>
         {tab === "preview" && (<>
-          {pdfBytes && <button onClick={handleDownloadPDF} style={btnStyle("rgba(34,197,94,.15)","#22c55e","rgba(34,197,94,.35)")}>⬇ Download PDF</button>}
+          <button onClick={handleDownloadPDF} disabled={pdfBusy} style={{ ...btnStyle("rgba(34,197,94,.15)","#22c55e","rgba(34,197,94,.35)"), opacity: pdfBusy ? 0.65 : 1, cursor: pdfBusy ? "wait" : "pointer" }}>{pdfBusy ? "⏳ Building Exact PDF…" : "⬇ Download Exact PDF"}</button>
           <button onClick={handlePrint} style={btnStyle("#0A1F44","#D4870A","#D4870A")}>🖨 Print</button>
           <button onClick={handleDownloadHTML} style={btnStyle("rgba(139,92,246,.15)","#a78bfa","rgba(139,92,246,.4)")}>⬇ Download HTML</button>
         </>)}
@@ -3590,7 +4290,7 @@ const PrintPreview = ({ html, csv, pdfBytes, title, onClose }) => {
 const buildMPOHTML = (mpo) => {
   const {
     mpoNo, date, month, year, vendorName, clientName, brand, campaignName,
-    agencyAddress, signedBy, signedTitle, preparedBy, preparedContact, preparedTitle,
+    agencyAddress, agencyEmail, agencyPhone, signedBy, signedTitle, signedSignature, preparedBy, preparedContact, preparedTitle, preparedSignature,
     spots, discPct, commPct, surchPct, surchLabel, terms = DEFAULT_APP_SETTINGS.mpoTerms, vatPct = 7.5,
   } = mpo;
 
@@ -3807,7 +4507,7 @@ const buildMPOHTML = (mpo) => {
         <img src="${LOGO_SRC}" alt="QVT Media" style="max-height:60px;max-width:120px;display:block;margin:0 auto;border:none;outline:none">
       </td></tr>
       <tr><td style="text-align:center;padding-top:8px;border:none">
-        <span style="font-size:7.5px;color:#7b0000;font-weight:700;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap">${(agencyAddress||"5, CRAIG STREET, OGUDU GRA, LAGOS").replace(/\n/g," | ")} &nbsp;|&nbsp; TEL: ${preparedContact||"+234 800 000 0000"}</span>
+        <span style="font-size:7.5px;color:#7b0000;font-weight:700;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap">${(agencyAddress||"5, CRAIG STREET, OGUDU GRA, LAGOS").replace(/\n/g," | ")} &nbsp;|&nbsp; TEL: ${agencyPhone||preparedContact||"+234 800 000 0000"}${agencyEmail ? ` &nbsp;|&nbsp; EMAIL: ${agencyEmail}` : ""}</span>
       </td></tr>
     </table>
   </div>
@@ -3859,8 +4559,8 @@ const buildMPOHTML = (mpo) => {
 
   <table class="sig"><tr>
     <td><div class="dots">&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;</div><div class="role">NAME/SIGNATURE/DATE &amp; OFFICIAL STAMP</div><div class="sub">For (Media House / Third party supplier)</div></td>
-    <td><div class="dots">&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;</div><div class="role">SIGNED BY: ${(signedBy||"").toUpperCase()}</div><div>${preparedContact||""}</div><div class="sub">${(signedTitle||"").toUpperCase()}</div></td>
-    <td><div class="dots">&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;</div><div class="role">PREPARED BY: ${(preparedBy||"").toUpperCase()}</div><div>${preparedContact||""}</div><div class="sub">${(preparedTitle||"").toUpperCase()}</div></td>
+    <td>${signedSignature ? `<div style="height:42px;display:flex;align-items:flex-end;margin:0 0 2px;"><img src="${signedSignature}" alt="Signed signature" style="max-height:40px;max-width:160px;object-fit:contain"></div>` : `<div style="height:42px;"></div>`}<div class="dots" style="margin-bottom:4px;">&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;</div><div class="role">SIGNED BY: ${(signedBy||"").toUpperCase()}</div><div>${preparedContact||""}</div><div class="sub">${(signedTitle||"").toUpperCase()}</div></td>
+    <td>${preparedSignature ? `<div style="height:42px;display:flex;align-items:flex-end;margin:0 0 2px;"><img src="${preparedSignature}" alt="Prepared signature" style="max-height:40px;max-width:160px;object-fit:contain"></div>` : `<div style="height:42px;"></div>`}<div class="dots" style="margin-bottom:4px;">&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;&#8230;</div><div class="role">PREPARED BY: ${(preparedBy||"").toUpperCase()}</div><div>${preparedContact||""}</div><div class="sub">${(preparedTitle||"").toUpperCase()}</div></td>
   </tr></table>
 
   <script>
@@ -4183,6 +4883,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
   const [executionUploading, setExecutionUploading] = useState({ signedMpo: false, invoice: false, proof: false });
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [workflowPanelOpen, setWorkflowPanelOpen] = useState(true);
 
   const VAT_RATE = parseFloat(appSettings?.vatRate) || 7.5;
   const [surcharge, setSurcharge] = useState({ pct: "", label: "" });
@@ -4207,7 +4908,11 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
     signedBy: "", signedTitle: "",
     preparedBy: user?.name || "", preparedContact: user?.phone || user?.email || "",
     preparedTitle: user?.title || "",
+    preparedSignature: user?.signatureDataUrl || "",
+    signedSignature: "",
     agencyAddress: user?.agencyAddress || "5, Craig Street, Ogudu GRA, Lagos",
+    agencyEmail: user?.agencyEmail || "",
+    agencyPhone: user?.agencyPhone || "",
     transmitMsg: "", status: "draft"
   });
 
@@ -4282,7 +4987,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
     if (!draft) return setToast({ msg: "No saved draft found.", type: "error" });
     setEditId(draft.editId || null);
     setStep(draft.step || 1);
-    setMpoData(draft.mpoData || blankMPO("", mpos));
+    setMpoData({ ...blankMPO("", mpos), ...(draft.mpoData || {}), preparedSignature: draft?.mpoData?.preparedSignature || user?.signatureDataUrl || "", signedSignature: draft?.mpoData?.signedSignature || "" });
     setSpots(draft.spots || []);
     setSurcharge(draft.surcharge || { pct: "", label: "" });
     setView("form");
@@ -4462,8 +5167,17 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
       setToast({ msg: `Your role (${formatRoleLabel(user?.role)}) cannot move this MPO from ${MPO_STATUS_LABELS[current] || current} to ${MPO_STATUS_LABELS[target] || target}.`, type: "error" });
       return;
     }
+    const nextOwner = getMpoWorkflowMeta({ ...mpo, status: target });
     if (mpoStatusNeedsNote(target)) {
-      setStatusModal({ mpo, nextStatus: target, note: "" });
+      setStatusModal({
+        mpo,
+        nextStatus: target,
+        note: "",
+        actionLabel: getWorkflowActionLabel(current, target),
+        noteLabel: target === "rejected" ? "Request changes note" : "Workflow note",
+        helperText: nextOwner?.hint || "",
+        nextOwnerLabel: nextOwner?.label || "Next team member",
+      });
       return;
     }
     applyMpoStatusChange(mpo, target, "");
@@ -4499,7 +5213,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
       setToast({ msg: `You can only edit MPOs in Draft or Rejected status. Current status: ${MPO_STATUS_LABELS[mpo?.status || "draft"] || (mpo?.status || "draft")}.`, type: "error" });
       return;
     }
-    setMpoData({ campaignId: mpo.campaignId||"", vendorId: mpo.vendorId||"", mpoNo: mpo.mpoNo||"", date: mpo.date||"", month: mpo.month||"", months: mpo.months||[], year: mpo.year||"", medium: mpo.medium||"", signedBy: mpo.signedBy||"", signedTitle: mpo.signedTitle||"", preparedBy: mpo.preparedBy||user?.name||"", preparedContact: mpo.preparedContact||user?.phone||user?.email||"", preparedTitle: mpo.preparedTitle||user?.title||"", agencyAddress: mpo.agencyAddress||user?.agencyAddress||"", transmitMsg: mpo.transmitMsg||"", status: mpo.status||"draft" });
+    setMpoData({ campaignId: mpo.campaignId||"", vendorId: mpo.vendorId||"", mpoNo: mpo.mpoNo||"", date: mpo.date||"", month: mpo.month||"", months: mpo.months||[], year: mpo.year||"", medium: mpo.medium||"", signedBy: mpo.signedBy||"", signedTitle: mpo.signedTitle||"", preparedBy: mpo.preparedBy||user?.name||"", preparedContact: mpo.preparedContact||user?.phone||user?.email||"", preparedTitle: mpo.preparedTitle||user?.title||"", preparedSignature: mpo.preparedSignature||user?.signatureDataUrl||"", signedSignature: mpo.signedSignature||"", agencyAddress: mpo.agencyAddress||user?.agencyAddress||"", transmitMsg: mpo.transmitMsg||"", status: mpo.status||"draft" });
     setSurcharge({ pct: mpo.surchPct ? String((mpo.surchPct||0)*100) : "", label: mpo.surchLabel||"" });
     setSpots(mpo.spots || []); setEditId(mpo.id); setStep(1); setView("form");
     setDailyMode(false); setCalRows([blankCalRow()]); setCalData({}); setActiveCalMonth("");
@@ -4558,7 +5272,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
     try {
       const generatedMpoNo = editId ? mpoData.mpoNo : await generateNextMpoNoFromSupabase(campaign?.brand || mpoData.brand || "MPO");
       const existingExec = editId ? (mpos.find(m => m.id === editId) || {}) : {};
-      const record = { id: editId || uid(), ...mpoData, mpoNo: generatedMpoNo, vendorName: vendor?.name || "", clientName: client?.name || "", campaignName: campaign?.name || "", brand: campaign?.brand || "", medium: mpoData.medium || campaign?.medium || "", months: mpoData.months || [], spots, totalSpots, totalGross, discPct, discAmt, lessDisc, commPct, commAmt: commAmt, afterComm, surchPct, surchAmt, surchLabel: surcharge.label, netVal, vatPct: VAT_RATE, vatAmt, grandTotal, terms: appSettings?.mpoTerms || DEFAULT_APP_SETTINGS.mpoTerms, roundToWholeNaira: !!appSettings?.roundToWholeNaira,
+      const record = { id: editId || uid(), ...mpoData, preparedSignature: mpoData.preparedSignature || user?.signatureDataUrl || "", signedSignature: mpoData.signedSignature || "", agencyEmail: mpoData.agencyEmail || user?.agencyEmail || "", agencyPhone: mpoData.agencyPhone || user?.agencyPhone || "", mpoNo: generatedMpoNo, vendorName: vendor?.name || "", clientName: client?.name || "", campaignName: campaign?.name || "", brand: campaign?.brand || "", medium: mpoData.medium || campaign?.medium || "", months: mpoData.months || [], spots, totalSpots, totalGross, discPct, discAmt, lessDisc, commPct, commAmt: commAmt, afterComm, surchPct, surchAmt, surchLabel: surcharge.label, netVal, vatPct: VAT_RATE, vatAmt, grandTotal, terms: appSettings?.mpoTerms || DEFAULT_APP_SETTINGS.mpoTerms, roundToWholeNaira: !!appSettings?.roundToWholeNaira,
         dispatchStatus: existingExec.dispatchStatus || "pending",
         dispatchedAt: existingExec.dispatchedAt || null,
         dispatchedBy: existingExec.dispatchedBy || null,
@@ -4587,7 +5301,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
 
       let saved;
       if (editId) {
-        saved = await updateMpoInSupabase(editId, record);
+        saved = { ...(await updateMpoInSupabase(editId, record)), preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
         setMpos(m => m.map(x => x.id === editId ? saved : x));
         createAuditEventInSupabase({
           agencyId: user.agencyId,
@@ -4598,7 +5312,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
           metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
         }).catch(error => console.error("Failed to write MPO audit event:", error));
       } else {
-        saved = await createMpoInSupabase(user.agencyId, user.id, record);
+        saved = { ...(await createMpoInSupabase(user.agencyId, user.id, record)), preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
         setMpos(m => [saved, ...m]);
         createAuditEventInSupabase({
           agencyId: user.agencyId,
@@ -4638,7 +5352,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
   };
 
   const openPreview = (mpo) => {
-    const safeMpo = sanitizeMPOForExport(mpo);
+    const safeMpo = sanitizeMPOForExport({ ...mpo, preparedSignature: mpo?.preparedSignature || user?.signatureDataUrl || "", signedSignature: mpo?.signedSignature || "", agencyEmail: mpo?.agencyEmail || user?.agencyEmail || "", agencyPhone: mpo?.agencyPhone || user?.agencyPhone || "" });
     const html = buildMPOHTML(safeMpo);
     const pdfBytes = buildMPOPdf(safeMpo);
     const csvHeaders = ["Programme","WD","Time Belt","Material","Duration","Rate/Spot","Spots","Gross Value"];
@@ -4657,12 +5371,26 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
   };
 
   const statusColors = MPO_STATUS_COLORS;
-  const baseMpos = viewMode === "archived" ? archivedOnly(mpos) : viewMode === "all" ? mpos : activeOnly(mpos);
-  const visibleMpos = baseMpos.filter(m => {
-    const matchesSearch = !searchTerm || [m.mpoNo, m.vendorName, m.clientName, m.campaignName, m.brand].some(v => String(v || "").toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesStatus = statusFilter === "all" || (m.status || "draft") === statusFilter;
-    return matchesSearch && matchesStatus;
+  const visibleMpos = (viewMode === "archived" ? archivedOnly(mpos) : viewMode === "all" ? mpos : activeOnly(mpos)).filter(m => {
+    const q = `${m.mpoNo || ""} ${m.vendorName || ""} ${m.clientName || ""} ${m.brand || ""}`.toLowerCase();
+    return q.includes(searchTerm.toLowerCase()) && (statusFilter === "all" || (m.status || "draft") === statusFilter);
   });
+  const workflowStats = {
+    myQueue: visibleMpos.filter(m => isMpoAwaitingUser(user, m)).length,
+    pendingReview: visibleMpos.filter(m => ["submitted", "reviewed"].includes(String(m.status || "draft").toLowerCase())).length,
+    readyToSend: visibleMpos.filter(m => String(m.status || "draft").toLowerCase() === "approved").length,
+    needsChanges: visibleMpos.filter(m => String(m.status || "draft").toLowerCase() === "rejected").length,
+  };
+  const myWorkflowQueue = [...visibleMpos]
+    .filter(m => isMpoAwaitingUser(user, m))
+    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
+    .slice(0, 6);
+  const workflowLaneCounts = MPO_STATUS_OPTIONS.reduce((acc, option) => {
+    acc[option.value] = visibleMpos.filter(m => String(m.status || "draft").toLowerCase() === option.value).length;
+    return acc;
+  }, {});
+  const topQuickQueue = myWorkflowQueue.slice(0, 3);
+  const visibleMpoCards = [...visibleMpos].sort((a, b) => b.createdAt - a.createdAt);
 
   if (view === "list") return (
     <div className="fade">
@@ -4752,29 +5480,35 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
         </Modal>
       )}
       {statusModal && (
-        <Modal title={`Move MPO to ${MPO_STATUS_LABELS[statusModal.nextStatus] || statusModal.nextStatus}`} onClose={() => setStatusModal(null)} width={560}>
+        <Modal title={statusModal.actionLabel || `Move MPO to ${MPO_STATUS_LABELS[statusModal.nextStatus] || statusModal.nextStatus}`} onClose={() => setStatusModal(null)} width={560}>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ fontSize: 13, color: "var(--text2)" }}>
               {statusModal.mpo?.mpoNo || "MPO"} will move from <strong>{MPO_STATUS_LABELS[statusModal.mpo?.status || "draft"] || (statusModal.mpo?.status || "draft")}</strong> to <strong>{MPO_STATUS_LABELS[statusModal.nextStatus] || statusModal.nextStatus}</strong>.
             </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <Badge color={getMpoWorkflowMeta(statusModal.mpo).color}>{getMpoWorkflowMeta(statusModal.mpo).label}</Badge>
+              <Badge color={getMpoWorkflowMeta({ ...statusModal.mpo, status: statusModal.nextStatus }).color}>Next up: {statusModal.nextOwnerLabel || getMpoWorkflowMeta({ ...statusModal.mpo, status: statusModal.nextStatus }).label}</Badge>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text2)", background: "var(--bg3)", borderRadius: 10, padding: "10px 12px", border: "1px solid var(--border)" }}>
+              {statusModal.helperText || getMpoWorkflowMeta({ ...statusModal.mpo, status: statusModal.nextStatus }).hint}
+            </div>
             <Field
-              label={statusModal.nextStatus === "rejected" ? "Rejection note" : "Approval / workflow note"}
-              textarea
+              label={statusModal.noteLabel || (statusModal.nextStatus === "rejected" ? "Rejection note" : "Approval / workflow note")}
               rows={4}
               value={statusModal.note || ""}
               onChange={value => setStatusModal(modal => ({ ...modal, note: value }))}
-              placeholder={statusModal.nextStatus === "rejected" ? "Why is this MPO being rejected?" : "Add context for the next team member..."}
+              placeholder={statusModal.nextStatus === "rejected" ? "What should be corrected before this MPO can move forward?" : "Add context for the next team member..."}
               required
             />
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <Btn variant="ghost" onClick={() => setStatusModal(null)}>Cancel</Btn>
-              <Btn onClick={() => {
+              <Btn variant={getWorkflowActionVariant(statusModal.nextStatus)} onClick={() => {
                 if (mpoStatusNeedsNote(statusModal.nextStatus) && !String(statusModal.note || "").trim()) {
                   setToast({ msg: "A note is required for this workflow action.", type: "error" });
                   return;
                 }
                 applyMpoStatusChange(statusModal.mpo, statusModal.nextStatus, statusModal.note || "");
-              }}>Confirm Status Change</Btn>
+              }}>{statusModal.actionLabel || "Confirm Status Change"}</Btn>
             </div>
           </div>
         </Modal>
@@ -4784,9 +5518,73 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}><Field value={searchTerm} onChange={setSearchTerm} placeholder="Search MPO, vendor, client..." /><Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} /><Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />{canManage && <Btn icon="+" onClick={openNew}>New MPO</Btn>}</div>
       </div>
       {hasSavedDraft && <Card style={{ marginBottom: 14, padding: "14px 18px", background: "rgba(59,126,245,.08)", border: "1px solid rgba(59,126,245,.22)" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}><div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>Saved MPO draft found</div><div style={{ fontSize: 12, color: "var(--text2)", marginTop: 3 }}>Your last in-progress MPO was autosaved locally. You can resume it or clear it.</div></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Btn variant="blue" size="sm" onClick={resumeSavedDraft}>Resume Draft</Btn><Btn variant="ghost" size="sm" onClick={clearSavedDraft}>Clear Draft</Btn></div></div></Card>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 14 }}>
+        <Stat icon="⏳" label="My Queue" value={workflowStats.myQueue} sub="MPOs currently waiting on your role" color="var(--blue)" />
+        <Stat icon="🧾" label="Pending Review" value={workflowStats.pendingReview} sub="Submitted and reviewed MPOs in the approval lane" color="var(--purple)" />
+        <Stat icon="📤" label="Ready to Send" value={workflowStats.readyToSend} sub="Approved MPOs waiting for dispatch" color="var(--teal)" />
+        <Stat icon="🛠" label="Needs Changes" value={workflowStats.needsChanges} sub="Rejected MPOs waiting for revision" color="var(--red)" />
+      </div>
+      <Card style={{ marginBottom: 14, padding: "16px 18px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: workflowPanelOpen ? 14 : 0 }}>
+          <div>
+            <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Approvals Automation</div>
+            <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 4 }}>Role-based queue, waiting-on visibility, and one-click workflow actions.</div>
+          </div>
+          <Btn variant="ghost" size="sm" onClick={() => setWorkflowPanelOpen(open => !open)}>{workflowPanelOpen ? "Hide" : "Show"} queue</Btn>
+        </div>
+        {workflowPanelOpen && (
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr .9fr", gap: 14 }}>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 14, background: "var(--bg3)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>My approval / action queue</div>
+                <Badge color="blue">{workflowStats.myQueue} item{workflowStats.myQueue !== 1 ? "s" : ""}</Badge>
+              </div>
+              {topQuickQueue.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--text2)" }}>Nothing is currently waiting on your role.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {topQuickQueue.map(mpo => {
+                    const workflowMeta = getMpoWorkflowMeta(mpo);
+                    const quickActions = getQuickWorkflowActions(user, mpo).slice(0, 2);
+                    return (
+                      <div key={mpo.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 13px", background: "var(--bg2)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{mpo.mpoNo || "MPO"} · {mpo.vendorName || "Vendor"}</div>
+                          <Badge color={workflowMeta.color}>Waiting on you</Badge>
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 5 }}>{workflowMeta.hint}</div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                          {quickActions.map(action => (
+                            <Btn key={action.value} size="sm" variant={action.variant} onClick={() => requestMpoStatusChange(mpo, action.value)}>{action.label}</Btn>
+                          ))}
+                          <Btn size="sm" variant="ghost" onClick={() => openMpoHistory(mpo)}>History</Btn>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 14, background: "var(--bg3)" }}>
+              <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Workflow lanes</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {MPO_STATUS_OPTIONS.map(option => (
+                  <div key={option.value} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 10px", borderRadius: 9, background: "var(--bg2)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <Badge color={statusColors[option.value] || "accent"}>{option.label}</Badge>
+                      <span style={{ fontSize: 12, color: "var(--text2)" }}>{getMpoWorkflowMeta({ status: option.value }).label}</span>
+                    </div>
+                    <strong style={{ fontFamily: "'Syne',sans-serif" }}>{workflowLaneCounts[option.value] || 0}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
       {visibleMpos.length === 0 ? <Card><Empty icon="📄" title="No MPOs yet" sub="Create your first Media Purchase Order" /></Card> :
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {[...visibleMpos].sort((a, b) => b.createdAt - a.createdAt).map(m => (
+          {visibleMpoCards.map(m => (
             <Card key={m.id} style={{ padding: "14px 18px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
                 <div style={{ width: 44, height: 44, background: "rgba(240,165,0,.1)", border: "1px solid rgba(240,165,0,.2)", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>📄</div>
@@ -4794,11 +5592,15 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
                   <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>{m.mpoNo || "MPO"} <span style={{ color: "var(--text3)", fontSize: 13 }}>— {m.vendorName}</span></div>
                   <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>{m.clientName} {m.brand && `· ${m.brand}`} · {(m.months||[]).length > 1 ? (m.months||[]).join("-") : m.month} {m.year} · {m.totalSpots} spots</div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                    <Badge color={statusColors[m.status || "draft"] || "accent"}>{MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft")}</Badge>
+                    <Badge color={getMpoWorkflowMeta(m).color}>Waiting on: {getMpoWorkflowMeta(m).label}</Badge>
+                    {isMpoAwaitingUser(user, m) ? <Badge color="blue">My Queue</Badge> : null}
                     <Badge color={getExecutionHealthColor(m)}>{getExecutionHealthLabel(m)}</Badge>
                     <Badge color="blue">Invoice: {(MPO_INVOICE_STATUS_OPTIONS.find(o => o.value === (m.invoiceStatus || "pending"))?.label || m.invoiceStatus || "pending")}</Badge>
                     <Badge color="purple">Proof: {(MPO_PROOF_STATUS_OPTIONS.find(o => o.value === (m.proofStatus || "pending"))?.label || m.proofStatus || "pending")}</Badge>
                     <Badge color="green">Payment: {(MPO_PAYMENT_STATUS_OPTIONS.find(o => o.value === (m.paymentStatus || "unpaid"))?.label || m.paymentStatus || "unpaid")}</Badge>
-                  </div>{isArchived(m) && <div style={{ marginTop: 4 }}><Badge color="red">Archived</Badge></div>}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 7 }}>{getMpoWorkflowMeta(m).hint}</div>{isArchived(m) && <div style={{ marginTop: 4 }}><Badge color="red">Archived</Badge></div>}
                 </div>
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
                   <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase" }}>Gross</div><div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, color: "var(--text2)" }}>{fmtN(m.totalGross)}</div></div>
@@ -4806,6 +5608,9 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
                   {canManageStatus ? <Field value={m.status || "draft"} onChange={v => requestMpoStatusChange(m, v)} options={[{ value: m.status || "draft", label: MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft") }, ...getAllowedMpoStatusTargets(user, m).map(value => ({ value, label: MPO_STATUS_LABELS[value] || value }))].filter((option, index, arr) => arr.findIndex(item => item.value === option.value) === index)} /> : <div style={{ minWidth: 110 }}><Badge color={statusColors[m.status || "draft"] || "accent"}>{(m.status || "draft").toUpperCase()}</Badge></div>}
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
+                  {getQuickWorkflowActions(user, m).slice(0, 2).map(action => (
+                    <Btn key={action.value} variant={action.variant} size="sm" onClick={() => requestMpoStatusChange(m, action.value)}>{action.label}</Btn>
+                  ))}
                   <Btn variant="ghost" size="sm" onClick={() => openEdit(m)} icon="✏️">Edit</Btn>
                   <Btn variant="ghost" size="sm" onClick={() => openExecutionModal(m)} icon="📦">Execution</Btn>
                   <Btn variant="ghost" size="sm" onClick={() => openMpoHistory(m)} icon="🕘">History</Btn>
@@ -5239,6 +6044,12 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
               <div style={{ display: "flex", flexDirection: "column", gap: 13 }}>
                 <Field label="Signed By (Name)" value={mpoData.signedBy} onChange={upd("signedBy")} placeholder="Nkechi Eluma" />
                 <Field label="Signed By (Title)" value={mpoData.signedTitle} onChange={upd("signedTitle")} placeholder="Head Buying and Compliance" />
+                {user?.signatureDataUrl && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <Btn variant="ghost" size="sm" onClick={() => setMpoData(m => ({ ...m, signedSignature: user.signatureDataUrl }))}>Use My Uploaded Signature</Btn>
+                    {mpoData.signedSignature ? <Btn variant="danger" size="sm" onClick={() => setMpoData(m => ({ ...m, signedSignature: "" }))}>Clear Signature</Btn> : null}
+                  </div>
+                )}
                 <div style={{ background: "var(--bg3)", border: "1px solid var(--border2)", borderRadius: 10, padding: "13px 15px" }}>
                   <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>Prepared By (from your account)</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -5246,9 +6057,19 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}><span style={{ color: "var(--text3)" }}>Title</span><span style={{ fontWeight: 600 }}>{user?.title || "—"}</span></div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}><span style={{ color: "var(--text3)" }}>Contact</span><span style={{ fontWeight: 600 }}>{user?.email || "—"}</span></div>
                   </div>
+                  {user?.signatureDataUrl && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 11, color: "var(--text3)", marginBottom: 6 }}>Prepared signature</div>
+                      <img src={user.signatureDataUrl} alt="Prepared signature" style={{ maxHeight: 52, maxWidth: 220, objectFit: "contain", background: "#fff", borderRadius: 8, border: "1px solid var(--border)" }} />
+                    </div>
+                  )}
                   <div style={{ marginTop: 9, fontSize: 11, color: "var(--text3)" }}>To update, edit your profile or re-register with updated details.</div>
                 </div>
                 <Field label="Agency Address" value={mpoData.agencyAddress} onChange={upd("agencyAddress")} placeholder="5, Craig Street, Ogudu GRA, Lagos" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                  <Field label="Agency Email" type="email" value={mpoData.agencyEmail || ""} onChange={upd("agencyEmail")} placeholder="hello@agency.com" />
+                  <Field label="Agency Phone" type="tel" value={mpoData.agencyPhone || ""} onChange={upd("agencyPhone")} placeholder="+234 800 000 0000" />
+                </div>
               </div>
             </Card>
             <Card style={{ background: "linear-gradient(135deg,rgba(240,165,0,.07),rgba(59,126,245,.04))", border: "1px solid rgba(240,165,0,.18)" }}>
@@ -5281,7 +6102,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
 };
 
 /* ── SETTINGS ───────────────────────────────────────────── */
-const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSettings, vendors, clients, campaigns, rates, mpos, members, setMembers, notifications, unreadNotifications, onMarkNotificationRead, onMarkAllNotificationsRead }) => {
+const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSettings, vendors, clients, campaigns, rates, mpos, receivables = [], members, setMembers, notifications, unreadNotifications, onMarkNotificationRead, onMarkAllNotificationsRead }) => {
   const [toast, setToast] = useState(null);
   const backupInputRef = useRef(null);
   const [confirm, setConfirm] = useState(null);
@@ -5297,11 +6118,11 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
   const [notificationFilter, setNotificationFilter] = useState("all");
 
   // Profile form
-  const [pf, setPf] = useState({ name: user.name || "", title: user.title || "", email: user.email || "", phone: user.phone || "" });
+  const [pf, setPf] = useState({ name: user.name || "", title: user.title || "", email: user.email || "", phone: user.phone || "", signatureDataUrl: user.signatureDataUrl || "" });
   const up = k => v => setPf(p => ({ ...p, [k]: v }));
 
   // Agency form
-  const [af, setAf] = useState({ agency: user.agency || "", address: user.agencyAddress || "" });
+  const [af, setAf] = useState({ agency: user.agency || "", address: user.agencyAddress || "", email: user.agencyEmail || "", phone: user.agencyPhone || "" });
   const [docSettings, setDocSettings] = useState({
     vatRate: String(appSettings?.vatRate ?? 7.5),
     sessionHours: String(appSettings?.sessionHours ?? DEFAULT_SESSION_HOURS),
@@ -5314,11 +6135,36 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
   // Password form
   const [sf, setSf] = useState({ current: "", newPw: "", confirm: "" });
   const us = k => v => setSf(s => ({ ...s, [k]: v }));
+  const signatureInputRef = useRef(null);
+
+  const handleSignatureUpload = async (file) => {
+    if (!file) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      setPf(p => ({ ...p, signatureDataUrl: dataUrl }));
+      onUserUpdate({ ...user, signatureDataUrl: dataUrl });
+      await persistSignatureForUser(user, dataUrl);
+      setToast({ msg: "Signature uploaded and saved.", type: "success" });
+    } catch (error) {
+      setToast({ msg: error.message || "Failed to upload signature.", type: "error" });
+    }
+  };
+
+  const handleSignatureRemove = async () => {
+    try {
+      setPf(p => ({ ...p, signatureDataUrl: "" }));
+      onUserUpdate({ ...user, signatureDataUrl: "" });
+      await persistSignatureForUser(user, "");
+      setToast({ msg: "Signature removed.", type: "success" });
+    } catch (error) {
+      setToast({ msg: error.message || "Failed to remove signature.", type: "error" });
+    }
+  };
 
   useEffect(() => {
-    setPf({ name: user.name || "", title: user.title || "", email: user.email || "", phone: user.phone || "" });
-    setAf({ agency: user.agency || "", address: user.agencyAddress || "" });
-  }, [user?.id, user?.name, user?.title, user?.email, user?.phone, user?.agency, user?.agencyAddress]);
+    setPf({ name: user.name || "", title: user.title || "", email: user.email || "", phone: user.phone || "", signatureDataUrl: user.signatureDataUrl || "" });
+    setAf({ agency: user.agency || "", address: user.agencyAddress || "", email: user.agencyEmail || "", phone: user.agencyPhone || "" });
+  }, [user?.id, user?.name, user?.title, user?.email, user?.phone, user?.agency, user?.agencyAddress, user?.signatureDataUrl, user?.agencyEmail, user?.agencyPhone]);
 
   useEffect(() => {
     setDocSettings({
@@ -5401,7 +6247,7 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
         recordId: user.agencyId,
         action: "updated",
         actor: user,
-        metadata: { name: updated.agency || af.agency || "", address: updated.agencyAddress || af.address || "" },
+        metadata: { name: updated.agency || af.agency || "", address: updated.agencyAddress || af.address || "", email: updated.agencyEmail || af.email || "", phone: updated.agencyPhone || af.phone || "" },
       }).catch(error => console.error("Failed to write audit event:", error));
       setToast({ msg: "Agency details updated!", type: "success" });
     } catch (error) {
@@ -5414,14 +6260,15 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
       version: APP_VERSION,
       exportedAt: new Date().toISOString(),
       user: { ...user },
-      data: { vendors, clients, campaigns, rates, mpos, appSettings },
+      data: { vendors, clients, campaigns, rates, mpos, receivables, notifications, appSettings, localPreferences: { theme: store.get(themeKeyForUser(user?.id || null), getDefaultTheme(user?.id || null)), signatureCached: !!user?.signatureDataUrl } },
     };
     downloadJSON(`mediadesk-backup-${new Date().toISOString().slice(0,10)}.json`, payload);
     setToast({ msg: "Agency backup exported successfully.", type: "success" });
   };
 
-  const handleBackupImport = async () => {
-    setToast({ msg: "Cloud workspaces no longer support direct browser backup import. Use Supabase or CSV import tools instead.", type: "error" });
+  const handleBackupImport = async (file) => {
+    if (!file) return;
+    setToast({ msg: "Snapshot import is disabled for cloud workspaces to protect your live Supabase data. Use CSV tools for structured imports instead.", type: "error" });
   };
 
   const saveDocumentSettings = async () => {
@@ -5555,8 +6402,26 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
                     <Field label="Email Address" type="email" value={pf.email} onChange={up("email")} placeholder="you@agency.com" required note="Used for login" />
                     <Field label="Phone Number" type="tel" value={pf.phone} onChange={up("phone")} placeholder="+234 800 000 0000" note="Used as Prepared By contact on MPOs" />
                   </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 14px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em" }}>Signature</div>
+                        <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 4 }}>Upload your signature image to show on MPO signatories.</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <Btn variant="ghost" size="sm" onClick={() => signatureInputRef.current?.click()}>Upload Signature</Btn>
+                        {pf.signatureDataUrl ? <Btn variant="danger" size="sm" onClick={handleSignatureRemove}>Remove</Btn> : null}
+                      </div>
+                    </div>
+                    <input ref={signatureInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleSignatureUpload(e.target.files?.[0])} />
+                    {pf.signatureDataUrl ? (
+                      <img src={pf.signatureDataUrl} alt="Signature preview" style={{ maxHeight: 62, maxWidth: 220, objectFit: "contain", background: "#fff", borderRadius: 8, border: "1px solid var(--border)" }} />
+                    ) : (
+                      <div style={{ fontSize: 12, color: "var(--text3)" }}>No signature uploaded yet.</div>
+                    )}
+                  </div>
                   <div style={{ background: "rgba(240,165,0,.07)", border: "1px solid rgba(240,165,0,.18)", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "var(--text2)" }}>
-                    💡 Your <strong style={{ color: "var(--accent)" }}>name and title</strong> are automatically used in the "Prepared By" field on every MPO you generate.
+                    💡 Your <strong style={{ color: "var(--accent)" }}>name, title, and signature</strong> are automatically used in the "Prepared By" field on every MPO you generate.
                   </div>
                   <div style={{ display: "flex", justifyContent: "flex-end" }}>
                     <Btn onClick={saveProfile} icon="✓">Save Profile</Btn>
@@ -5572,7 +6437,7 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
               <Card style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 10 }}>
                   <div style={{ width: 48, height: 48, background: "rgba(59,126,245,.12)", border: "1px solid rgba(59,126,245,.25)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>🏢</div>
-                  <div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 17 }}>{user.agency}</div><div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>{user.agencyAddress || "No address set"}</div></div>
+                  <div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 17 }}>{user.agency}</div><div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>{user.agencyAddress || "No address set"}</div><div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, fontSize: 12, color: "var(--text2)" }}><span>✉️ {user.agencyEmail || "No agency email"}</span><span>📞 {user.agencyPhone || "No agency phone"}</span></div></div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px" }}>
                   <div>
@@ -5587,6 +6452,10 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                   <Field label="Agency / Company Name" value={af.agency} onChange={ua("agency")} placeholder="Apex Media Ltd" required />
                   <Field label="Agency Address" value={af.address} onChange={ua("address")} placeholder="5, Craig Street, Ogudu GRA, Lagos" note="Used as the footer address on all MPO documents" />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                    <Field label="Agency Email" type="email" value={af.email} onChange={ua("email")} placeholder="hello@agency.com" />
+                    <Field label="Agency Phone" type="tel" value={af.phone} onChange={ua("phone")} placeholder="+234 800 000 0000" />
+                  </div>
                   <div style={{ display: "flex", justifyContent: "flex-end" }}>
                     {canManageWorkspace && <Btn onClick={saveAgency} icon="✓">Save Agency Details</Btn>}
                   </div>
@@ -5776,12 +6645,19 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
           {section === "data" && (
             <div className="fade">
               <Card style={{ marginBottom: 14 }}>
-                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Data stored on this device</h2>
-                <p style={{ color: "var(--text2)", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>All your MediaDesk data is stored locally in your browser. It is private to this device and browser. Export a full JSON backup regularly so you can restore your workspace on another device or after a browser reset.</p>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}><Btn variant="blue" icon="⬇" onClick={exportBackup}>Export Full Backup</Btn><Btn variant="secondary" icon="⬆" onClick={() => backupInputRef.current?.click()}>Import Backup</Btn><input ref={backupInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={e => handleBackupImport(e.target.files?.[0])} /></div>
+                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Workspace Data & Maintenance</h2>
+                <p style={{ color: "var(--text2)", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>Your operational records now live in your Supabase workspace. This page is for exporting a snapshot, reviewing what is synced, and cleaning up browser-only preferences on this device.</p>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+                  <Btn variant="blue" icon="⬇" onClick={exportBackup}>Export Workspace Snapshot</Btn>
+                  <Btn variant="secondary" icon="⬆" onClick={() => backupInputRef.current?.click()}>Import Snapshot</Btn>
+                  <input ref={backupInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={e => handleBackupImport(e.target.files?.[0])} />
+                </div>
+                <div style={{ background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)", padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.6 }}>Snapshot export includes vendors, clients, campaigns, rates, MPOs, notifications, and document settings for review. Direct browser snapshot import is intentionally disabled for cloud workspaces to prevent overwriting live Supabase data accidentally.</div>
+                </div>
                 {[
                   [vendors, "Vendors"], [clients, "Clients & Brands"],
-                  [campaigns, "Campaigns"], [rates, "Media Rates"], [mpos, "MPOs"],
+                  [campaigns, "Campaigns"], [rates, "Media Rates"], [mpos, "MPOs"], [notifications, "Notifications"],
                 ].map(([data, label]) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
                     <span style={{ color: "var(--text2)" }}>{label}</span>
@@ -5789,18 +6665,34 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
                   </div>
                 ))}
               </Card>
+              <Card style={{ marginBottom: 14 }}>
+                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Browser-only Preferences</h2>
+                <p style={{ color: "var(--text2)", fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>These controls affect only this browser. They do not delete live Supabase records for your agency.</p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
+                  <div style={{ padding: "12px 14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 11, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", fontWeight: 700 }}>Theme Preference</div>
+                    <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, marginTop: 6 }}>{store.get(themeKeyForUser(user?.id || null), getDefaultTheme(user?.id || null))}</div>
+                    <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4 }}>Stored per user on this device.</div>
+                  </div>
+                  <div style={{ padding: "12px 14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 11, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", fontWeight: 700 }}>Signature Cache</div>
+                    <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, marginTop: 6 }}>{user?.signatureDataUrl ? "Available" : "Not saved"}</div>
+                    <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4 }}>Used to keep the signatory visible between sessions.</div>
+                  </div>
+                </div>
+              </Card>
               <Card style={{ border: "1px solid rgba(239,68,68,.25)", background: "rgba(239,68,68,.04)" }}>
-                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 6, color: "var(--red)" }}>⚠️ Danger Zone</h2>
-                <p style={{ color: "var(--text2)", fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>These actions are permanent and cannot be undone. Please export your data from Reports before proceeding.</p>
+                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 6, color: "var(--red)" }}>⚠️ Local Cleanup</h2>
+                <p style={{ color: "var(--text2)", fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>Use these only when this browser has stale preferences. Your Supabase workspace records remain intact.</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {[
-                    { label: "Clear all MPOs", key: "msp_mpos", desc: "Delete all saved purchase orders" },
-                    { label: "Clear all Campaigns", key: "msp_campaigns", desc: "Delete all campaign records" },
-                    { label: "Clear all Rate Cards", key: "msp_rates", desc: "Delete all media rate data" },
-                  ].map(({ label, key, desc }) => (
-                    <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border2)" }}>
+                    { label: "Clear MPO Draft Cache", desc: "Remove the autosaved draft on this browser only.", onYes: () => { store.del("msp_mpo_draft"); setToast({ msg: "Local MPO draft cache cleared.", type: "success" }); setConfirm(null); } },
+                    { label: "Reset My Theme Preference", desc: "Forget this user’s local light/dark mode on this browser.", onYes: () => { store.del(themeKeyForUser(user?.id || null)); setToast({ msg: "Local theme preference reset. Reload to apply system default.", type: "success" }); setConfirm(null); } },
+                    { label: "Clear My Saved Signature Cache", desc: "Removes only the browser cache copy. Your saved profile value stays in Supabase metadata if available.", onYes: () => { setStoredUserSignature(user?.id, ""); setToast({ msg: "Local signature cache cleared.", type: "success" }); setConfirm(null); } },
+                  ].map(({ label, desc, onYes }) => (
+                    <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border2)" }}>
                       <div><div style={{ fontSize: 13, fontWeight: 600 }}>{label}</div><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{desc}</div></div>
-                      {canDanger && <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Permanently delete all ${label.replace("Clear all ","")}? This cannot be undone.`, onYes: () => { store.del(key); setToast({ msg: `${label} completed.`, type: "success" }); setConfirm(null); } })}>Clear</Btn>}
+                      {canDanger && <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `${label}? This only affects this browser.`, onYes })}>Clear</Btn>}
                     </div>
                   ))}
                 </div>
@@ -5815,128 +6707,2002 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
 };
 
 
+
 const ReportsPage = ({ vendors, clients, campaigns, rates, mpos }) => {
-  const [activeReport, setActiveReport] = useState(null);
   const [toast, setToast] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [historyModal, setHistoryModal] = useState(null);
-  const [statusModal, setStatusModal] = useState(null);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [filters, setFilters] = useState({
+    startDate: "",
+    endDate: "",
+    vendorId: "",
+    clientId: "",
+    campaignId: "",
+    medium: "",
+    mpoStatus: "",
+    paymentStatus: "",
+    reconciliationStatus: "",
+    search: "",
+  });
 
-  const reports = [
-    { id: "mpo_summary",   icon: "📄", title: "MPO Summary Report",         desc: "All purchase orders with status, vendor, client, and totals", color: "var(--accent)" },
-    { id: "campaign_spend",icon: "📢", title: "Campaign Spend Report",       desc: "Budget vs MPO value by campaign and client", color: "var(--blue)" },
-    { id: "vendor_summary",icon: "🏢", title: "Vendor Activity Report",      desc: "Total spots and spend across all media houses", color: "var(--green)" },
-    { id: "rate_card",     icon: "💰", title: "Rate Card Summary",           desc: "All media rates with discount and net values", color: "var(--purple)" },
-    { id: "client_report", icon: "👥", title: "Client Portfolio Report",     desc: "Clients, brands, campaigns, and total MPO values", color: "var(--teal)" },
-    { id: "spot_schedule", icon: "📋", title: "Master Spot Schedule",        desc: "All spots across all MPOs in one sheet", color: "var(--orange)" },
+  const updateFilter = (key) => (value) => setFilters(prev => ({ ...prev, [key]: value }));
+
+  const liveVendors = activeOnly(vendors);
+  const liveClients = activeOnly(clients);
+  const liveCampaigns = activeOnly(campaigns);
+  const liveRates = activeOnly(rates);
+  const liveMpos = activeOnly(mpos);
+
+  const parseMpoTimestamp = (mpo) => {
+    if (mpo?.date) {
+      const t = new Date(mpo.date).getTime();
+      if (!Number.isNaN(t)) return t;
+    }
+    if (mpo?.createdAt) return mpo.createdAt;
+    if (mpo?.updatedAt) return mpo.updatedAt;
+    return 0;
+  };
+
+  const mediumForMpo = (mpo) => {
+    const campaign = liveCampaigns.find(c => c.id === mpo.campaignId);
+    const vendor = liveVendors.find(v => v.id === mpo.vendorId);
+    return (mpo.medium || campaign?.medium || vendor?.type || "Unknown").trim();
+  };
+
+  const matchSearch = (mpo) => {
+    const term = filters.search.trim().toLowerCase();
+    if (!term) return true;
+    return [
+      mpo.mpoNo,
+      mpo.vendorName,
+      mpo.clientName,
+      mpo.brand,
+      mpo.campaignName,
+      mediumForMpo(mpo),
+      mpo.status,
+      mpo.paymentStatus,
+      mpo.reconciliationStatus,
+    ].some(value => String(value || "").toLowerCase().includes(term));
+  };
+
+  const filteredMpos = liveMpos.filter(mpo => {
+    const mpoTs = parseMpoTimestamp(mpo);
+    const startTs = filters.startDate ? new Date(`${filters.startDate}T00:00:00`).getTime() : null;
+    const endTs = filters.endDate ? new Date(`${filters.endDate}T23:59:59`).getTime() : null;
+
+    if (startTs && mpoTs && mpoTs < startTs) return false;
+    if (endTs && mpoTs && mpoTs > endTs) return false;
+    if (filters.vendorId && mpo.vendorId !== filters.vendorId) return false;
+    if (filters.clientId) {
+      const campaign = liveCampaigns.find(c => c.id === mpo.campaignId);
+      if ((campaign?.clientId || "") !== filters.clientId) return false;
+    }
+    if (filters.campaignId && mpo.campaignId !== filters.campaignId) return false;
+    if (filters.medium && mediumForMpo(mpo) !== filters.medium) return false;
+    if (filters.mpoStatus && (mpo.status || "draft") !== filters.mpoStatus) return false;
+    if (filters.paymentStatus && (mpo.paymentStatus || "unpaid") !== filters.paymentStatus) return false;
+    if (filters.reconciliationStatus && (mpo.reconciliationStatus || "not_started") !== filters.reconciliationStatus) return false;
+    if (!matchSearch(mpo)) return false;
+    return true;
+  });
+
+  const filteredCampaignIds = new Set(filteredMpos.map(m => m.campaignId).filter(Boolean));
+  const filteredVendorIds = new Set(filteredMpos.map(m => m.vendorId).filter(Boolean));
+  const filteredClientIds = new Set(
+    filteredMpos
+      .map(m => liveCampaigns.find(c => c.id === m.campaignId)?.clientId)
+      .filter(Boolean)
+  );
+
+  const selectedCampaigns = liveCampaigns.filter(c => {
+    if (filters.campaignId && c.id !== filters.campaignId) return false;
+    if (filters.clientId && c.clientId !== filters.clientId) return false;
+    if (filters.medium && (c.medium || "") !== filters.medium) return false;
+    if (!filters.campaignId && !filters.clientId && !filters.medium && filteredCampaignIds.size) {
+      return filteredCampaignIds.has(c.id);
+    }
+    return true;
+  });
+
+  const selectedRates = liveRates.filter(rate => {
+    if (filters.vendorId && rate.vendorId !== filters.vendorId) return false;
+    if (filters.medium && (rate.mediaType || "") !== filters.medium) return false;
+    if (filters.search) {
+      const term = filters.search.toLowerCase();
+      const vendorName = liveVendors.find(v => v.id === rate.vendorId)?.name || "";
+      if (![vendorName, rate.programme, rate.timeBelt, rate.mediaType, rate.notes].some(value => String(value || "").toLowerCase().includes(term))) return false;
+    }
+    return true;
+  });
+
+  const totalMpoValue = filteredMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0), 0);
+  const totalGrossValue = filteredMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.totalGross) || 0), 0);
+  const paidValue = filteredMpos.reduce((sum, mpo) => sum + ((mpo.paymentStatus || "unpaid") === "paid" ? (parseFloat(mpo.reconciledAmount) || parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || 0) : 0), 0);
+  const outstandingValue = filteredMpos.reduce((sum, mpo) => sum + ((mpo.paymentStatus || "unpaid") !== "paid" ? (parseFloat(mpo.reconciledAmount) || parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || 0) : 0), 0);
+  const reconciledValue = filteredMpos.reduce((sum, mpo) => sum + ((mpo.reconciliationStatus || "not_started") === "completed" ? (parseFloat(mpo.reconciledAmount) || parseFloat(mpo.grandTotal) || 0) : 0), 0);
+  const budgetPool = selectedCampaigns.reduce((sum, campaign) => sum + (parseFloat(campaign.budget) || 0), 0);
+  const plannedSpots = filteredMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.plannedSpotsExecution ?? mpo.totalSpots) || 0), 0);
+  const airedSpots = filteredMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.airedSpots) || 0), 0);
+  const pendingApprovals = filteredMpos.filter(mpo => ["draft", "submitted", "reviewed"].includes(mpo.status || "draft")).length;
+  const unpaidCount = filteredMpos.filter(mpo => (mpo.paymentStatus || "unpaid") !== "paid").length;
+  const reconciliationPendingCount = filteredMpos.filter(mpo => (mpo.reconciliationStatus || "not_started") !== "completed").length;
+
+  const spendByVendor = Object.values(filteredMpos.reduce((acc, mpo) => {
+    const key = mpo.vendorId || mpo.vendorName || "unknown";
+    if (!acc[key]) {
+      const vendor = liveVendors.find(v => v.id === mpo.vendorId);
+      acc[key] = {
+        vendor: mpo.vendorName || vendor?.name || "Unknown Vendor",
+        medium: mediumForMpo(mpo),
+        mpoCount: 0,
+        spots: 0,
+        gross: 0,
+        net: 0,
+        paid: 0,
+        outstanding: 0,
+      };
+    }
+    acc[key].mpoCount += 1;
+    acc[key].spots += parseFloat(mpo.totalSpots) || 0;
+    acc[key].gross += parseFloat(mpo.totalGross) || 0;
+    const value = parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0;
+    acc[key].net += value;
+    if ((mpo.paymentStatus || "unpaid") === "paid") acc[key].paid += value;
+    else acc[key].outstanding += value;
+    return acc;
+  }, {})).sort((a, b) => b.net - a.net);
+
+  const spendByClient = Object.values(filteredMpos.reduce((acc, mpo) => {
+    const campaign = liveCampaigns.find(c => c.id === mpo.campaignId);
+    const client = liveClients.find(c => c.id === campaign?.clientId);
+    const key = campaign?.clientId || mpo.clientName || "unknown";
+    if (!acc[key]) {
+      acc[key] = {
+        client: mpo.clientName || client?.name || "Unknown Client",
+        campaignCount: 0,
+        mpoCount: 0,
+        budget: 0,
+        spend: 0,
+        variance: 0,
+      };
+    }
+    acc[key].mpoCount += 1;
+    acc[key].spend += parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0;
+    return acc;
+  }, {})).map(entry => {
+    const campaignsForClient = selectedCampaigns.filter(campaign => {
+      const client = liveClients.find(c => c.id === campaign.clientId);
+      return (client?.name || "") === entry.client || campaign.clientId === liveClients.find(c => c.name === entry.client)?.id;
+    });
+    entry.campaignCount = campaignsForClient.length;
+    entry.budget = campaignsForClient.reduce((sum, campaign) => sum + (parseFloat(campaign.budget) || 0), 0);
+    entry.variance = entry.budget - entry.spend;
+    return entry;
+  }).sort((a, b) => b.spend - a.spend);
+
+  const campaignBudgetControl = selectedCampaigns.map(campaign => {
+    const client = liveClients.find(c => c.id === campaign.clientId);
+    const campaignMpos = filteredMpos.filter(mpo => mpo.campaignId === campaign.id);
+    const spend = campaignMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0), 0);
+    const gross = campaignMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.totalGross) || 0), 0);
+    const budget = parseFloat(campaign.budget) || 0;
+    const utilization = budget > 0 ? (spend / budget) * 100 : 0;
+    return {
+      campaign: campaign.name || "Unnamed Campaign",
+      client: client?.name || "—",
+      brand: campaign.brand || "—",
+      medium: campaign.medium || "—",
+      status: campaign.status || "draft",
+      budget,
+      gross,
+      spend,
+      variance: budget - spend,
+      mpoCount: campaignMpos.length,
+      utilization,
+    };
+  }).sort((a, b) => b.spend - a.spend);
+
+  const financeTracker = filteredMpos.map(mpo => ({
+    mpoNo: mpo.mpoNo || "—",
+    vendor: mpo.vendorName || "—",
+    client: mpo.clientName || "—",
+    campaign: mpo.campaignName || "—",
+    value: parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0,
+    invoiceStatus: mpo.invoiceStatus || "pending",
+    invoiceNo: mpo.invoiceNo || "—",
+    paymentStatus: mpo.paymentStatus || "unpaid",
+    paymentReference: mpo.paymentReference || "—",
+    paidAt: mpo.paidAt ? new Date(mpo.paidAt).toLocaleDateString() : "—",
+    outstanding: (mpo.paymentStatus || "unpaid") === "paid" ? 0 : (parseFloat(mpo.reconciledAmount) || parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || 0),
+  })).sort((a, b) => b.outstanding - a.outstanding);
+
+  const reconciliationControl = filteredMpos.map(mpo => ({
+    mpoNo: mpo.mpoNo || "—",
+    vendor: mpo.vendorName || "—",
+    campaign: mpo.campaignName || "—",
+    planned: parseFloat(mpo.plannedSpotsExecution ?? mpo.totalSpots) || 0,
+    aired: parseFloat(mpo.airedSpots) || 0,
+    missed: parseFloat(mpo.missedSpots) || 0,
+    makegood: parseFloat(mpo.makegoodSpots) || 0,
+    proofStatus: mpo.proofStatus || "pending",
+    reconciliationStatus: mpo.reconciliationStatus || "not_started",
+    reconciledAmount: parseFloat(mpo.reconciledAmount) || parseFloat(mpo.grandTotal) || 0,
+    notes: mpo.reconciliationNotes || "—",
+  })).sort((a, b) => b.reconciledAmount - a.reconciledAmount);
+
+  const statusPipeline = [
+    "draft",
+    "submitted",
+    "reviewed",
+    "approved",
+    "sent",
+    "aired",
+    "reconciled",
+    "closed",
+    "rejected",
+  ].map(status => {
+    const rows = filteredMpos.filter(mpo => (mpo.status || "draft") === status);
+    return {
+      status: MPO_STATUS_LABELS[status] || status,
+      count: rows.length,
+      value: rows.reduce((sum, mpo) => sum + (parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0), 0),
+      paid: rows.reduce((sum, mpo) => sum + ((mpo.paymentStatus || "unpaid") === "paid" ? (parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0) : 0), 0),
+    };
+  });
+
+  const rateCardSnapshot = selectedRates.map(rate => {
+    const vendor = liveVendors.find(v => v.id === rate.vendorId);
+    const discount = parseFloat(rate.discount) || 0;
+    const commission = parseFloat(rate.commission) || 0;
+    const rateValue = parseFloat(rate.ratePerSpot) || 0;
+    const netRate = rateValue * (1 - discount / 100) * (1 - commission / 100);
+    return {
+      vendor: vendor?.name || "—",
+      programme: rate.programme || "—",
+      timeBelt: rate.timeBelt || "—",
+      medium: rate.mediaType || vendor?.type || "—",
+      duration: `${rate.duration || "30"}"`,
+      rate: rateValue,
+      discount,
+      commission,
+      netRate,
+      notes: rate.notes || "—",
+    };
+  }).sort((a, b) => b.netRate - a.netRate);
+
+  const filteredMpoRegister = filteredMpos.map(mpo => ({
+    mpoNo: mpo.mpoNo || "—",
+    date: mpo.date || "—",
+    vendor: mpo.vendorName || "—",
+    client: mpo.clientName || "—",
+    brand: mpo.brand || "—",
+    campaign: mpo.campaignName || "—",
+    medium: mediumForMpo(mpo),
+    status: mpo.status || "draft",
+    paymentStatus: mpo.paymentStatus || "unpaid",
+    reconciliationStatus: mpo.reconciliationStatus || "not_started",
+    totalSpots: parseFloat(mpo.totalSpots) || 0,
+    gross: parseFloat(mpo.totalGross) || 0,
+    net: parseFloat(mpo.netVal) || 0,
+    grandTotal: parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0,
+  })).sort((a, b) => (new Date(b.date).getTime() || 0) - (new Date(a.date).getTime() || 0));
+
+  const summaryCards = [
+    { label: "Filtered MPO Value", value: totalMpoValue, sub: `${filteredMpos.length} MPOs`, color: "var(--accent)", icon: "📄" },
+    { label: "Paid Value", value: paidValue, sub: `${filteredMpos.filter(m => (m.paymentStatus || "unpaid") === "paid").length} paid`, color: "var(--green)", icon: "✅" },
+    { label: "Outstanding Exposure", value: outstandingValue, sub: `${unpaidCount} unpaid`, color: "var(--red)", icon: "💸" },
+    { label: "Reconciled Value", value: reconciledValue, sub: `${filteredMpos.filter(m => (m.reconciliationStatus || "not_started") === "completed").length} completed`, color: "var(--blue)", icon: "🧾" },
+    { label: "Pending Approvals", value: pendingApprovals, sub: "Draft / submitted / reviewed", color: "var(--purple)", icon: "⏳" },
+    { label: "Aired vs Planned Spots", value: `${airedSpots}/${plannedSpots || 0}`, sub: plannedSpots ? `${Math.round((airedSpots / plannedSpots) * 100)}% delivery` : "No planned spots", color: "var(--teal)", icon: "📡" },
+    { label: "Campaign Budget Pool", value: budgetPool, sub: `${selectedCampaigns.length} campaigns`, color: "var(--orange)", icon: "🎯" },
+    { label: "Gross MPO Value", value: totalGrossValue, sub: `${reconciliationPendingCount} reconciliation pending`, color: "var(--text)", icon: "📊" },
   ];
 
-  const getReportData = (id) => {
-    switch (id) {
-      case "mpo_summary":
-        return { headers: ["MPO No.", "Vendor", "Client", "Brand", "Period", "Spots", "Gross Value", "Disc%", "Comm%", "Net Value", "Status"], rows: mpos.map(m => [m.mpoNo || "—", m.vendorName, m.clientName, m.brand || "—", `${m.month} ${m.year}`, m.totalSpots, m.totalGross, `${((m.discPct||0)*100).toFixed(0)}%`, `${((m.commPct||0)*100).toFixed(0)}%`, m.grandTotal || m.netVal, m.status || "draft"]) };
-      case "campaign_spend":
-        return { headers: ["Campaign", "Client", "Brand", "Medium", "Budget (₦)", "MPO Count", "Total MPO Value (₦)", "Status"], rows: campaigns.map(c => { const cl = clients.find(x => x.id === c.clientId); const campMPOs = mpos.filter(m => m.campaignId === c.id); const totalMPO = campMPOs.reduce((s, m) => s + (m.grandTotal || m.netVal || 0), 0); return [c.name, cl?.name || "—", c.brand || "—", c.medium || "—", c.budget || 0, campMPOs.length, totalMPO, c.status]; }) };
-      case "vendor_summary":
-        return { headers: ["Vendor", "Type", "Default Rate", "Disc%", "Comm%", "MPO Count", "Total Spots", "Total Gross", "Total Net"], rows: vendors.map(v => { const vMPOs = mpos.filter(m => m.vendorId === v.id); const ts = vMPOs.reduce((s, m) => s + (m.totalSpots || 0), 0); const tg = vMPOs.reduce((s, m) => s + (m.totalGross || 0), 0); const tn = vMPOs.reduce((s, m) => s + (m.grandTotal || m.netVal || 0), 0); return [v.name, v.type, v.rate || 0, `${v.discount || 0}%`, `${v.commission || 0}%`, vMPOs.length, ts, tg, tn]; }) };
-      case "rate_card":
-        return { headers: ["Vendor", "Programme", "Time Belt", "Media Type", "Duration", "Rate/Spot (₦)", "Disc%", "Comm%", "Net Rate (₦)"], rows: rates.map(r => { const v = vendors.find(x => x.id === r.vendorId); const net = (parseFloat(r.ratePerSpot)||0)*(1-(parseFloat(r.discount)||0)/100)*(1-(parseFloat(r.commission)||0)/100); return [v?.name||"—", r.programme||"—", r.timeBelt||"—", r.mediaType||"—", `${r.duration}"`, r.ratePerSpot||0, `${r.discount||0}%`, `${r.commission||0}%`, net.toFixed(2)]; }) };
-      case "client_report":
-        return { headers: ["Client", "Industry", "Brands", "Campaigns", "Total MPOs", "Total MPO Value (₦)", "Email", "Phone"], rows: clients.map(c => { const campCount = campaigns.filter(x => x.clientId === c.id).length; const clientMPOs = mpos.filter(m => campaigns.find(x => x.id === m.campaignId)?.clientId === c.id); const total = clientMPOs.reduce((s, m) => s + (m.grandTotal || m.netVal || 0), 0); return [c.name, c.industry||"—", c.brands||"—", campCount, clientMPOs.length, total, c.email||"—", c.phone||"—"]; }) };
-      case "spot_schedule":
-        return { headers: ["MPO No.", "Vendor", "Client", "Month/Year", "Programme", "WD", "Time Belt", "Material", "Duration", "Rate/Spot", "Spots", "Gross"], rows: mpos.flatMap(m => (m.spots || []).map(s => [m.mpoNo||"—", m.vendorName, m.clientName, `${m.month} ${m.year}`, s.programme, s.wd, s.timeBelt, s.material, `${s.duration}"`, s.ratePerSpot, s.spots, (parseFloat(s.spots)||0)*(parseFloat(s.ratePerSpot)||0)])) };
-      default: return { headers: [], rows: [] };
+  const buildSectionExport = (title, headers, rows, descriptor = "") => {
+    if (!rows.length) {
+      setToast({ msg: `No data to export for ${title}.`, type: "error" });
+      return;
     }
-  };
-
-  const openReport = (id) => {
-    const rep = reports.find(r => r.id === id);
-    const { headers, rows } = getReportData(id);
-    if (!rows.length) return setToast({ msg: "No data to export yet.", type: "error" });
     const esc = v => String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    const tableRows = rows.map(r => `<tr>${r.map((c,ci) => `<td style="padding:5px 9px;border:1px solid #ddd;font-size:10px;${ci===0?"font-weight:600":""}">${esc(c)}</td>`).join("")}</tr>`).join("");
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${rep.title}</title>
-    <style>body{font-family:Arial,sans-serif;padding:24px;color:#000;margin:0}h1{font-size:17px;margin-bottom:4px;color:#0A1F44}p{font-size:11px;color:#555;margin-bottom:16px}table{width:100%;border-collapse:collapse;margin-top:8px}th{background:#0A1F44;color:#fff;padding:7px 9px;font-size:10px;text-align:left;border:1px solid #0A1F44}tr:nth-child(even){background:#F5F7FA}@media print{body{padding:10px}}</style>
+    const htmlRows = rows.map(row => `<tr>${row.map((cell, i) => `<td style="padding:6px 9px;border:1px solid #ddd;font-size:10px;${i===0?"font-weight:600":""}">${esc(cell)}</td>`).join("")}</tr>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#000;margin:0}
+        h1{font-size:18px;margin-bottom:4px;color:#0A1F44}
+        p{font-size:11px;color:#555;margin-bottom:16px}
+        table{width:100%;border-collapse:collapse;margin-top:8px}
+        th{background:#0A1F44;color:#fff;padding:7px 9px;font-size:10px;text-align:left;border:1px solid #0A1F44}
+        tr:nth-child(even){background:#F5F7FA}
+        @media print{body{padding:10px}}
+      </style>
     </head><body>
-    <h1>${rep.icon} ${rep.title}</h1>
-    <p>Generated: ${new Date().toLocaleDateString("en-NG")} · MediaDesk Pro Platform · ${rows.length} records</p>
-    <table><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr>${tableRows}</table>
+      <h1>${title}</h1>
+      <p>Generated ${new Date().toLocaleString("en-NG")}${descriptor ? ` · ${descriptor}` : ""}</p>
+      <table><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr>${htmlRows}</table>
     </body></html>`;
     const csv = buildCSV(rows, headers);
-    setPreview({ html, csv, title: rep.title });
+    setPreview({ html, csv, title });
   };
 
-  const { headers, rows } = activeReport ? getReportData(activeReport) : { headers: [], rows: [] };
-  const activeRep = reports.find(r => r.id === activeReport);
+  const filterDescriptorParts = [
+    filters.startDate ? `From ${filters.startDate}` : "",
+    filters.endDate ? `To ${filters.endDate}` : "",
+    filters.vendorId ? `Vendor: ${liveVendors.find(v => v.id === filters.vendorId)?.name || "Selected"}` : "",
+    filters.clientId ? `Client: ${liveClients.find(c => c.id === filters.clientId)?.name || "Selected"}` : "",
+    filters.campaignId ? `Campaign: ${liveCampaigns.find(c => c.id === filters.campaignId)?.name || "Selected"}` : "",
+    filters.medium ? `Medium: ${filters.medium}` : "",
+    filters.mpoStatus ? `Status: ${MPO_STATUS_LABELS[filters.mpoStatus] || filters.mpoStatus}` : "",
+    filters.paymentStatus ? `Payment: ${filters.paymentStatus}` : "",
+    filters.reconciliationStatus ? `Reconciliation: ${filters.reconciliationStatus}` : "",
+  ].filter(Boolean);
+  const filterDescriptor = filterDescriptorParts.join(" · ");
+
+  const sectionConfigs = [
+    {
+      id: "spend-vendor",
+      title: "Spend by Vendor",
+      icon: "🏢",
+      desc: "See which media owners are taking the largest share of spend and exposure.",
+      headers: ["Vendor", "Medium", "MPO Count", "Spots", "Gross Value", "Net Value", "Paid", "Outstanding"],
+      rows: spendByVendor.map(row => [row.vendor, row.medium, row.mpoCount, row.spots, row.gross, row.net, row.paid, row.outstanding]),
+    },
+    {
+      id: "spend-client",
+      title: "Spend by Client",
+      icon: "👥",
+      desc: "Track client value, budget coverage, and campaign concentration.",
+      headers: ["Client", "Campaigns", "MPO Count", "Budget Pool", "Spend", "Budget Variance"],
+      rows: spendByClient.map(row => [row.client, row.campaignCount, row.mpoCount, row.budget, row.spend, row.variance]),
+    },
+    {
+      id: "campaign-budget",
+      title: "Campaign Budget Control",
+      icon: "🎯",
+      desc: "Compare campaign budgets against MPO spend and utilization.",
+      headers: ["Campaign", "Client", "Brand", "Medium", "Status", "Budget", "Gross Value", "MPO Spend", "Variance", "Utilization %", "MPO Count"],
+      rows: campaignBudgetControl.map(row => [row.campaign, row.client, row.brand, row.medium, row.status, row.budget, row.gross, row.spend, row.variance, `${row.utilization.toFixed(1)}%`, row.mpoCount]),
+    },
+    {
+      id: "finance-tracker",
+      title: "Finance Tracker",
+      icon: "💸",
+      desc: "Follow invoice, payment, and outstanding exposure on every MPO.",
+      headers: ["MPO No.", "Vendor", "Client", "Campaign", "Value", "Invoice Status", "Invoice No.", "Payment Status", "Payment Ref", "Paid At", "Outstanding"],
+      rows: financeTracker.map(row => [row.mpoNo, row.vendor, row.client, row.campaign, row.value, row.invoiceStatus, row.invoiceNo, row.paymentStatus, row.paymentReference, row.paidAt, row.outstanding]),
+    },
+    {
+      id: "reconciliation-control",
+      title: "Reconciliation Control",
+      icon: "🧾",
+      desc: "Watch proof of airing, delivery variance, and reconciliation status.",
+      headers: ["MPO No.", "Vendor", "Campaign", "Planned Spots", "Aired Spots", "Missed", "Makegood", "Proof Status", "Reconciliation", "Reconciled Amount", "Notes"],
+      rows: reconciliationControl.map(row => [row.mpoNo, row.vendor, row.campaign, row.planned, row.aired, row.missed, row.makegood, row.proofStatus, row.reconciliationStatus, row.reconciledAmount, row.notes]),
+    },
+    {
+      id: "pipeline",
+      title: "Status Pipeline",
+      icon: "📈",
+      desc: "Measure MPO flow through draft, approval, airing, and closeout.",
+      headers: ["Status", "Count", "Value", "Paid Value"],
+      rows: statusPipeline.map(row => [row.status, row.count, row.value, row.paid]),
+    },
+    {
+      id: "rate-snapshot",
+      title: "Rate Card Snapshot",
+      icon: "💰",
+      desc: "Review effective net rates after discount and commission.",
+      headers: ["Vendor", "Programme", "Time Belt", "Medium", "Duration", "Rate/Spot", "Disc %", "Comm %", "Net Rate", "Notes"],
+      rows: rateCardSnapshot.map(row => [row.vendor, row.programme, row.timeBelt, row.medium, row.duration, row.rate, `${row.discount}%`, `${row.commission}%`, row.netRate, row.notes]),
+    },
+    {
+      id: "mpo-register",
+      title: "Filtered MPO Register",
+      icon: "📄",
+      desc: "A clean register of all MPOs matching your filters.",
+      headers: ["MPO No.", "Date", "Vendor", "Client", "Brand", "Campaign", "Medium", "Status", "Payment Status", "Reconciliation", "Total Spots", "Gross", "Net", "Grand Total"],
+      rows: filteredMpoRegister.map(row => [row.mpoNo, row.date, row.vendor, row.client, row.brand, row.campaign, row.medium, row.status, row.paymentStatus, row.reconciliationStatus, row.totalSpots, row.gross, row.net, row.grandTotal]),
+    },
+  ];
+
+  const mediumOptions = Array.from(new Set([
+    ...liveCampaigns.map(c => c.medium).filter(Boolean),
+    ...liveRates.map(r => r.mediaType).filter(Boolean),
+    ...liveMpos.map(m => mediumForMpo(m)).filter(Boolean),
+  ])).sort().map(value => ({ value, label: value }));
+
+  const resetFilters = () => setFilters({
+    startDate: "",
+    endDate: "",
+    vendorId: "",
+    clientId: "",
+    campaignId: "",
+    medium: "",
+    mpoStatus: "",
+    paymentStatus: "",
+    reconciliationStatus: "",
+    search: "",
+  });
+
+  const exportExecutiveSummary = () => {
+    const headers = ["Metric", "Value", "Context"];
+    const rows = summaryCards.map(card => [card.label, typeof card.value === "number" ? card.value : card.value, card.sub]);
+    buildSectionExport("Executive Finance Summary", headers, rows, filterDescriptor);
+  };
+
+  const financeInputStyle = {
+    background: "var(--bg3)",
+    border: "1px solid var(--border2)",
+    borderRadius: 8,
+    padding: "9px 13px",
+    color: "var(--text)",
+    fontSize: 13,
+    outline: "none",
+    width: "100%",
+  };
 
   return (
     <div className="fade">
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
       {preview && <PrintPreview html={preview.html} csv={preview.csv} pdfBytes={preview.pdfBytes} title={preview.title} onClose={() => setPreview(null)} />}
+
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>Reports</h1>
-        <p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Generate and export reports across your media data</p>
+        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>Reports & Finance Control</h1>
+        <p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Filter, monitor, and export spend, payment, reconciliation, and campaign control views from one workspace.</p>
       </div>
 
-      {/* Report cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14, marginBottom: 28 }}>
-        {reports.map(r => (
-          <button key={r.id} onClick={() => setActiveReport(activeReport === r.id ? null : r.id)}
-            style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "16px 18px", background: activeReport === r.id ? "var(--bg3)" : "var(--bg2)", border: `1px solid ${activeReport === r.id ? r.color : "var(--border)"}`, borderRadius: 13, cursor: "pointer", color: "var(--text)", textAlign: "left", transition: "all .18s", boxShadow: activeReport === r.id ? `0 0 20px ${r.color}18` : "none" }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = r.color; e.currentTarget.style.background = "var(--bg3)"; }}
-            onMouseLeave={e => { if (activeReport !== r.id) { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg2)"; } }}>
-            <span style={{ fontSize: 28, flexShrink: 0 }}>{r.icon}</span>
-            <div>
-              <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 5, color: activeReport === r.id ? r.color : "var(--text)" }}>{r.title}</div>
-              <div style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.4 }}>{r.desc}</div>
-            </div>
-          </button>
-        ))}
-      </div>
+      <Card style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>Control Filters</h2>
+            <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Narrow the reporting scope by dates, ownership, status, and finance state.</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="ghost" size="sm" onClick={resetFilters}>Reset Filters</Btn>
+            <Btn variant="blue" size="sm" icon="⬇" onClick={exportExecutiveSummary}>Export Summary</Btn>
+          </div>
+        </div>
 
-      {/* Report viewer */}
-      {activeReport && (
-        <div className="fade">
-          <Card>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
-              <div>
-                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 17 }}>{activeRep?.icon} {activeRep?.title}</h2>
-                <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>{rows.length} records · {new Date().toLocaleDateString()}</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
+          <div><label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 5, display: "block" }}>Start Date</label><input type="date" value={filters.startDate} onChange={e => updateFilter("startDate")(e.target.value)} style={financeInputStyle} /></div>
+          <div><label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 5, display: "block" }}>End Date</label><input type="date" value={filters.endDate} onChange={e => updateFilter("endDate")(e.target.value)} style={financeInputStyle} /></div>
+          <Field label="Vendor" value={filters.vendorId} onChange={updateFilter("vendorId")} options={liveVendors.map(v => ({ value: v.id, label: v.name }))} placeholder="All Vendors" />
+          <Field label="Client" value={filters.clientId} onChange={updateFilter("clientId")} options={liveClients.map(c => ({ value: c.id, label: c.name }))} placeholder="All Clients" />
+          <Field label="Campaign" value={filters.campaignId} onChange={updateFilter("campaignId")} options={liveCampaigns.map(c => ({ value: c.id, label: c.name }))} placeholder="All Campaigns" />
+          <Field label="Medium" value={filters.medium} onChange={updateFilter("medium")} options={mediumOptions} placeholder="All Media" />
+          <Field label="MPO Status" value={filters.mpoStatus} onChange={updateFilter("mpoStatus")} options={MPO_STATUS_OPTIONS.map(option => ({ value: option.value, label: option.label }))} placeholder="All Statuses" />
+          <Field label="Payment Status" value={filters.paymentStatus} onChange={updateFilter("paymentStatus")} options={[
+            { value: "unpaid", label: "Unpaid" },
+            { value: "processing", label: "Processing" },
+            { value: "paid", label: "Paid" },
+          ]} placeholder="All Payment States" />
+          <Field label="Reconciliation" value={filters.reconciliationStatus} onChange={updateFilter("reconciliationStatus")} options={[
+            { value: "not_started", label: "Not Started" },
+            { value: "in_progress", label: "In Progress" },
+            { value: "completed", label: "Completed" },
+            { value: "disputed", label: "Disputed" },
+          ]} placeholder="All Reconciliation States" />
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 5, display: "block" }}>Search</label>
+            <input value={filters.search} onChange={e => updateFilter("search")(e.target.value)} placeholder="Search MPO no., vendor, client, brand, campaign, medium, or finance status…" style={financeInputStyle} />
+          </div>
+        </div>
+
+        {filterDescriptor ? (
+          <div style={{ marginTop: 14, fontSize: 12, color: "var(--text2)", padding: "10px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+            <strong style={{ color: "var(--text)" }}>Active filters:</strong> {filterDescriptor}
+          </div>
+        ) : null}
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14, marginBottom: 24 }}>
+        {summaryCards.map(card => {
+          const displayValue = typeof card.value === "number" ? fmtN(card.value) : card.value;
+          return (
+            <Card key={card.label} hoverable style={{ position: "relative", overflow: "hidden", padding: 18, minHeight: 148, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+              <div style={{ position: "absolute", top: -14, right: -10, fontSize: 64, opacity: .05 }}>{card.icon}</div>
+              <div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10, paddingRight: 28 }}>{card.label}</div>
+              <div
+                title={displayValue}
+                style={{
+                  fontSize: typeof card.value === "number" ? "clamp(1.7rem, 2vw, 2.35rem)" : "clamp(1.35rem, 1.8vw, 1.9rem)",
+                  fontWeight: 800,
+                  fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+                  fontVariantNumeric: "tabular-nums lining-nums",
+                  letterSpacing: "-0.04em",
+                  lineHeight: 1.05,
+                  color: card.color,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: "100%",
+                }}
+              >
+                {displayValue}
               </div>
-              <Btn variant="blue" size="sm" icon="⬇" onClick={() => openReport(activeReport)}>Preview & Export (PDF / CSV)</Btn>
-            </div>
-            {rows.length === 0 ? <Empty icon={activeRep?.icon} title="No data available" sub="Add data to generate this report" /> :
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 600 }}>
-                  <thead><tr style={{ background: "var(--bg3)" }}>{headers.map(h => <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {rows.map((row, i) => (
-                      <tr key={i} style={{ borderBottom: "1px solid var(--border)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "var(--bg3)"}
-                        onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)"}>
-                        {row.map((cell, j) => <td key={j} style={{ padding: "9px 12px", fontSize: 12, color: j === 0 ? "var(--text)" : "var(--text2)", fontWeight: j === 0 ? 600 : 400 }}>{typeof cell === "number" && cell > 999 ? fmtN(cell) : cell}</td>)}
+              <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 10, lineHeight: 1.45 }}>{card.sub}</div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {filteredMpos.length === 0 ? (
+        <Card>
+          <Empty icon="📊" title="No reporting data for this filter set" sub="Adjust your filters or add more MPO / campaign activity to see finance control insights." />
+        </Card>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {sectionConfigs.map(section => (
+            <Card key={section.id}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+                <div>
+                  <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>{section.icon} {section.title}</h2>
+                  <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>{section.desc}</p>
+                </div>
+                <Btn variant="blue" size="sm" icon="⬇" onClick={() => buildSectionExport(section.title, section.headers, section.rows, filterDescriptor)}>
+                  Export Section
+                </Btn>
+              </div>
+
+              {section.rows.length === 0 ? (
+                <Empty icon={section.icon} title={`No data for ${section.title}`} sub="Nothing matches the current filters." />
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                    <thead>
+                      <tr style={{ background: "var(--bg3)" }}>
+                        {section.headers.map(header => (
+                          <th key={header} style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>
+                            {header}
+                          </th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>}
-          </Card>
+                    </thead>
+                    <tbody>
+                      {section.rows.slice(0, 12).map((row, rowIndex) => (
+                        <tr
+                          key={`${section.id}-${rowIndex}`}
+                          style={{ borderBottom: "1px solid var(--border)", background: rowIndex % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}
+                          onMouseEnter={e => e.currentTarget.style.background = "var(--bg3)"}
+                          onMouseLeave={e => e.currentTarget.style.background = rowIndex % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)"}
+                        >
+                          {row.map((cell, cellIndex) => {
+                            const display = typeof cell === "number" && Math.abs(cell) >= 1000 ? fmtN(cell) : cell;
+                            return (
+                              <td key={cellIndex} style={{ padding: "8px 10px", fontSize: 12, color: cellIndex === 0 ? "var(--text)" : "var(--text2)", fontWeight: cellIndex === 0 ? 600 : 400, whiteSpace: cellIndex < 2 ? "nowrap" : "normal" }}>
+                                {display}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {section.rows.length > 12 ? (
+                    <div style={{ marginTop: 10, fontSize: 12, color: "var(--text3)" }}>
+                      Showing 12 of {section.rows.length} rows in-app. Use <strong style={{ color: "var(--text)" }}>Export Section</strong> for the full dataset.
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </Card>
+          ))}
         </div>
       )}
     </div>
   );
 };
 
+
+
+
+/* ── BUDGETING & BILLING ─────────────────────────────────── */
+const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
+  const [toast, setToast] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [budgetFilters, setBudgetFilters] = useState({ clientId: "", status: "", paymentStatus: "", search: "" });
+
+  const liveClients = activeOnly(clients);
+  const liveCampaigns = activeOnly(campaigns);
+  const liveMpos = activeOnly(mpos);
+
+  const updateBudgetFilter = (key) => (value) => setBudgetFilters(prev => ({ ...prev, [key]: value }));
+
+  const filteredCampaigns = liveCampaigns.filter(campaign => {
+    if (budgetFilters.clientId && campaign.clientId !== budgetFilters.clientId) return false;
+    if (budgetFilters.status && (campaign.status || "planning") !== budgetFilters.status) return false;
+    const term = budgetFilters.search.trim().toLowerCase();
+    if (!term) return true;
+    const client = liveClients.find(row => row.id === campaign.clientId);
+    return [campaign.name, campaign.brand, campaign.medium, campaign.status, client?.name].some(value => String(value || "").toLowerCase().includes(term));
+  });
+
+  const filteredCampaignIds = new Set(filteredCampaigns.map(campaign => campaign.id));
+
+  const filteredMpos = liveMpos.filter(mpo => {
+    if (budgetFilters.paymentStatus && (mpo.paymentStatus || "unpaid") !== budgetFilters.paymentStatus) return false;
+    if (budgetFilters.clientId) {
+      const campaign = liveCampaigns.find(row => row.id === mpo.campaignId);
+      if ((campaign?.clientId || "") !== budgetFilters.clientId) return false;
+    }
+    if (filteredCampaignIds.size && mpo.campaignId && !filteredCampaignIds.has(mpo.campaignId)) return false;
+    const term = budgetFilters.search.trim().toLowerCase();
+    if (!term) return true;
+    return [mpo.mpoNo, mpo.vendorName, mpo.clientName, mpo.brand, mpo.campaignName, mpo.invoiceNo, mpo.paymentReference].some(value => String(value || "").toLowerCase().includes(term));
+  });
+
+  const campaignFinanceRows = filteredCampaigns.map(campaign => {
+    const client = liveClients.find(row => row.id === campaign.clientId);
+    const campaignMpos = filteredMpos.filter(mpo => mpo.campaignId === campaign.id);
+    const budget = parseFloat(campaign.budget) || 0;
+    const committed = campaignMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0), 0);
+    const invoiced = campaignMpos.reduce((sum, mpo) => sum + (parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0), 0);
+    const paid = campaignMpos.reduce((sum, mpo) => sum + ((mpo.paymentStatus || "unpaid") === "paid" ? (parseFloat(mpo.reconciledAmount) || parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0) : 0), 0);
+    const outstanding = campaignMpos.reduce((sum, mpo) => sum + ((mpo.paymentStatus || "unpaid") !== "paid" ? (parseFloat(mpo.reconciledAmount) || parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0) : 0), 0);
+    const utilization = budget > 0 ? (committed / budget) * 100 : 0;
+    return {
+      id: campaign.id,
+      campaign: campaign.name || "Unnamed Campaign",
+      client: client?.name || "—",
+      brand: campaign.brand || "—",
+      medium: campaign.medium || "—",
+      status: campaign.status || "planning",
+      budget,
+      committed,
+      available: budget - committed,
+      invoiced,
+      paid,
+      outstanding,
+      utilization,
+      mpoCount: campaignMpos.length,
+    };
+  }).sort((a, b) => b.committed - a.committed);
+
+  const clientBudgetRows = Object.values(campaignFinanceRows.reduce((acc, row) => {
+    const key = row.client || "Unknown Client";
+    acc[key] = acc[key] || { client: key, campaigns: 0, budget: 0, committed: 0, available: 0, invoiced: 0, paid: 0, outstanding: 0 };
+    acc[key].campaigns += 1;
+    acc[key].budget += row.budget;
+    acc[key].committed += row.committed;
+    acc[key].available += row.available;
+    acc[key].invoiced += row.invoiced;
+    acc[key].paid += row.paid;
+    acc[key].outstanding += row.outstanding;
+    return acc;
+  }, {})).sort((a, b) => b.committed - a.committed);
+
+  const today = Date.now();
+  const invoiceAgingRows = filteredMpos.map(mpo => {
+    const value = parseFloat(mpo.reconciledAmount) || parseFloat(mpo.invoiceAmount) || parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0;
+    const invoiceTs = mpo.invoiceReceivedAt ? new Date(mpo.invoiceReceivedAt).getTime() : (mpo.date ? new Date(mpo.date).getTime() : 0);
+    const ageDays = invoiceTs ? Math.max(0, Math.floor((today - invoiceTs) / 86400000)) : 0;
+    return {
+      mpoNo: mpo.mpoNo || "—",
+      vendor: mpo.vendorName || "—",
+      client: mpo.clientName || "—",
+      campaign: mpo.campaignName || "—",
+      invoiceNo: mpo.invoiceNo || "—",
+      invoiceStatus: mpo.invoiceStatus || "pending",
+      paymentStatus: mpo.paymentStatus || "unpaid",
+      paymentReference: mpo.paymentReference || "—",
+      invoiceDate: mpo.invoiceReceivedAt ? new Date(mpo.invoiceReceivedAt).toLocaleDateString() : "—",
+      paidAt: mpo.paidAt ? new Date(mpo.paidAt).toLocaleDateString() : "—",
+      ageDays,
+      value,
+      outstanding: (mpo.paymentStatus || "unpaid") === "paid" ? 0 : value,
+    };
+  }).sort((a, b) => b.outstanding - a.outstanding || b.ageDays - a.ageDays);
+
+  const monthlyCashflow = Object.values(filteredMpos.reduce((acc, mpo) => {
+    const baseDate = mpo.invoiceReceivedAt || mpo.date || mpo.createdAt;
+    const parsed = baseDate ? new Date(baseDate) : null;
+    const monthKey = parsed && !Number.isNaN(parsed.getTime())
+      ? `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}`
+      : "Undated";
+    acc[monthKey] = acc[monthKey] || { period: monthKey, budget: 0, committed: 0, invoiced: 0, paid: 0, outstanding: 0 };
+    const campaign = liveCampaigns.find(row => row.id === mpo.campaignId);
+    const value = parseFloat(mpo.grandTotal) || parseFloat(mpo.netVal) || 0;
+    const invoiced = parseFloat(mpo.invoiceAmount) || value;
+    const paid = (mpo.paymentStatus || "unpaid") === "paid" ? (parseFloat(mpo.reconciledAmount) || invoiced || value) : 0;
+    acc[monthKey].committed += value;
+    acc[monthKey].invoiced += invoiced;
+    acc[monthKey].paid += paid;
+    acc[monthKey].outstanding += ((mpo.paymentStatus || "unpaid") === "paid" ? 0 : (parseFloat(mpo.reconciledAmount) || invoiced || value));
+    acc[monthKey].budget += parseFloat(campaign?.budget) || 0;
+    return acc;
+  }, {})).sort((a, b) => a.period.localeCompare(b.period));
+
+  const totalBudget = campaignFinanceRows.reduce((sum, row) => sum + row.budget, 0);
+  const totalCommitted = campaignFinanceRows.reduce((sum, row) => sum + row.committed, 0);
+  const totalInvoiced = campaignFinanceRows.reduce((sum, row) => sum + row.invoiced, 0);
+  const totalPaid = campaignFinanceRows.reduce((sum, row) => sum + row.paid, 0);
+  const totalOutstanding = campaignFinanceRows.reduce((sum, row) => sum + row.outstanding, 0);
+  const availableBudget = totalBudget - totalCommitted;
+  const overBudgetCount = campaignFinanceRows.filter(row => row.budget > 0 && row.committed > row.budget).length;
+  const averageUtilization = campaignFinanceRows.length ? campaignFinanceRows.reduce((sum, row) => sum + Math.min(row.utilization, 100), 0) / campaignFinanceRows.length : 0;
+  const invoiceReceivedCount = invoiceAgingRows.filter(row => row.invoiceStatus !== "pending").length;
+  const paidCount = invoiceAgingRows.filter(row => row.paymentStatus === "paid").length;
+  const outstandingCount = invoiceAgingRows.filter(row => row.outstanding > 0).length;
+
+  const agingBuckets = [
+    { label: "0-30 Days", test: days => days <= 30 },
+    { label: "31-60 Days", test: days => days >= 31 && days <= 60 },
+    { label: "61-90 Days", test: days => days >= 61 && days <= 90 },
+    { label: "90+ Days", test: days => days > 90 },
+  ].map(bucket => {
+    const rows = invoiceAgingRows.filter(row => row.outstanding > 0 && bucket.test(row.ageDays));
+    return { label: bucket.label, count: rows.length, value: rows.reduce((sum, row) => sum + row.outstanding, 0) };
+  });
+
+  const exportBudgetView = (title, headers, rows) => {
+    if (!rows.length) {
+      setToast({ msg: `No data to export for ${title}.`, type: "error" });
+      return;
+    }
+    const esc = v => String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const htmlRows = rows.map(row => `<tr>${row.map((cell, i) => `<td style="padding:6px 9px;border:1px solid #ddd;font-size:10px;${i===0?"font-weight:600":""}">${esc(cell)}</td>`).join("")}</tr>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#000;margin:0}
+        h1{font-size:18px;margin-bottom:4px;color:#0A1F44}
+        p{font-size:11px;color:#555;margin-bottom:16px}
+        table{width:100%;border-collapse:collapse;margin-top:8px}
+        th{background:#0A1F44;color:#fff;padding:7px 9px;font-size:10px;text-align:left;border:1px solid #0A1F44}
+        tr:nth-child(even){background:#F5F7FA}
+      </style>
+    </head><body>
+      <h1>${title}</h1>
+      <p>Generated ${new Date().toLocaleString("en-NG")}</p>
+      <table><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr>${htmlRows}</table>
+    </body></html>`;
+    const csv = buildCSV(rows, headers);
+    setPreview({ html, csv, title });
+  };
+
+  const budgetInputStyle = {
+    background: "var(--bg3)",
+    border: "1px solid var(--border2)",
+    borderRadius: 8,
+    padding: "9px 13px",
+    color: "var(--text)",
+    fontSize: 13,
+    outline: "none",
+    width: "100%",
+  };
+
+  return (
+    <div className="fade">
+      {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+      {preview && <PrintPreview html={preview.html} csv={preview.csv} pdfBytes={preview.pdfBytes} title={preview.title} onClose={() => setPreview(null)} />}
+
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>Budgeting & Invoice / Payment Phase</h1>
+        <p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Track budget allocation, MPO commitments, invoice exposure, and payment close-out from a single finance view.</p>
+      </div>
+
+      <Card style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>Finance Filters</h2>
+            <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Filter budget and billing insights by client, campaign status, payment stage, and keywords.</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="ghost" size="sm" onClick={() => setBudgetFilters({ clientId: "", status: "", paymentStatus: "", search: "" })}>Reset</Btn>
+            <Btn variant="blue" size="sm" icon="⬇" onClick={() => exportBudgetView("Budgeting Summary", ["Metric", "Value"], [["Campaign Budget Pool", totalBudget], ["Committed Spend", totalCommitted], ["Invoiced", totalInvoiced], ["Paid", totalPaid], ["Outstanding", totalOutstanding], ["Available Budget", availableBudget], ["Over-budget Campaigns", overBudgetCount], ["Average Utilization", `${averageUtilization.toFixed(1)}%`]])}>Export Summary</Btn>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
+          <Field label="Client" value={budgetFilters.clientId} onChange={updateBudgetFilter("clientId")} options={liveClients.map(client => ({ value: client.id, label: client.name }))} placeholder="All Clients" />
+          <Field label="Campaign Status" value={budgetFilters.status} onChange={updateBudgetFilter("status")} options={[{ value: "planning", label: "Planning" }, { value: "active", label: "Active" }, { value: "paused", label: "Paused" }, { value: "completed", label: "Completed" }]} placeholder="All Statuses" />
+          <Field label="Payment Status" value={budgetFilters.paymentStatus} onChange={updateBudgetFilter("paymentStatus")} options={MPO_PAYMENT_STATUS_OPTIONS} placeholder="All Payment States" />
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 5, display: "block" }}>Search</label>
+            <input value={budgetFilters.search} onChange={e => updateBudgetFilter("search")(e.target.value)} placeholder="Campaign, vendor, MPO, invoice..." style={budgetInputStyle} />
+          </div>
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 22 }}>
+        <Stat icon="🎯" label="Budget Pool" value={fmtN(totalBudget)} sub={`${campaignFinanceRows.length} campaigns`} color="var(--accent)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="🧾" label="Committed" value={fmtN(totalCommitted)} sub={`${invoiceReceivedCount} invoices logged`} color="var(--purple)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="💳" label="Paid" value={fmtN(totalPaid)} sub={`${paidCount} MPOs paid`} color="var(--green)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="⏳" label="Outstanding" value={fmtN(totalOutstanding)} sub={`${outstandingCount} items awaiting payment`} color="var(--red)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="📉" label="Available Budget" value={fmtN(availableBudget)} sub={`${overBudgetCount} over budget`} color="var(--blue)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="📈" label="Avg Utilization" value={`${averageUtilization.toFixed(1)}%`} sub="Across filtered campaigns" color="var(--teal)" valueSize="clamp(16px, 1.7vw, 22px)" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.15fr .95fr", gap: 18, alignItems: "start" }}>
+        <Card>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+            <div>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Campaign Budget Tracker</h2>
+              <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Budget vs commitments, invoicing, and payment delivery per campaign.</p>
+            </div>
+            <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Campaign Budget Tracker", ["Campaign", "Client", "Brand", "Medium", "Status", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding", "Utilization %", "MPO Count"], campaignFinanceRows.map(row => [row.campaign, row.client, row.brand, row.medium, row.status, row.budget, row.committed, row.available, row.invoiced, row.paid, row.outstanding, `${row.utilization.toFixed(1)}%`, row.mpoCount]))}>Export Tracker</Btn>
+          </div>
+          {campaignFinanceRows.length === 0 ? <Empty icon="🎯" title="No campaign budgets found" sub="Create campaigns and issue MPOs to populate this tracker." /> : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+                <thead>
+                  <tr style={{ background: "var(--bg3)" }}>
+                    {["Campaign", "Client", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding", "Utilization"].map(header => <th key={header} style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>{header}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaignFinanceRows.map((row, index) => {
+                    const util = row.utilization > 100 ? "var(--red)" : row.utilization > 80 ? "var(--orange)" : "var(--green)";
+                    return (
+                      <tr key={row.id} style={{ borderBottom: "1px solid var(--border)", background: index % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
+                        <td style={{ padding: "9px 10px", fontSize: 12, fontWeight: 700 }}>
+                          {row.campaign}
+                          <div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 400, marginTop: 3 }}>{row.brand} · {row.medium}</div>
+                        </td>
+                        <td style={{ padding: "9px 10px", fontSize: 12, color: "var(--text2)" }}>{row.client}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}>{fmtN(row.budget)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12, color: "var(--accent)", fontWeight: 700 }}>{fmtN(row.committed)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12, color: row.available < 0 ? "var(--red)" : "var(--green)", fontWeight: 700 }}>{fmtN(row.available)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}>{fmtN(row.invoiced)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12, color: "var(--green)", fontWeight: 700 }}>{fmtN(row.paid)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12, color: row.outstanding > 0 ? "var(--red)" : "var(--text2)", fontWeight: row.outstanding > 0 ? 700 : 400 }}>{fmtN(row.outstanding)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <div style={{ flex: 1, minWidth: 84, height: 8, borderRadius: 999, background: "var(--bg4)", overflow: "hidden" }}>
+                              <div style={{ width: `${Math.min(row.utilization, 100)}%`, height: "100%", background: util }} />
+                            </div>
+                            <span style={{ color: util, fontWeight: 700 }}>{row.utilization.toFixed(1)}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Invoice Aging</h2>
+              <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Invoice Aging", ["Bucket", "Count", "Outstanding"], agingBuckets.map(row => [row.label, row.count, row.value]))}>Export Aging</Btn>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {agingBuckets.map(bucket => (
+                <div key={bucket.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "11px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{bucket.label}</div>
+                    <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{bucket.count} invoice{bucket.count !== 1 ? "s" : ""}</div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: bucket.value > 0 ? "var(--red)" : "var(--text2)" }}>{fmtN(bucket.value)}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Client Budget Coverage</h2>
+              <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Client Budget Coverage", ["Client", "Campaigns", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding"], clientBudgetRows.map(row => [row.client, row.campaigns, row.budget, row.committed, row.available, row.invoiced, row.paid, row.outstanding]))}>Export Clients</Btn>
+            </div>
+            {clientBudgetRows.length === 0 ? <Empty icon="👥" title="No client budgets yet" sub="Link campaigns to clients to build the coverage summary." /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {clientBudgetRows.slice(0, 6).map(row => (
+                  <div key={row.client} style={{ padding: "11px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{row.client}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{row.campaigns} campaign{row.campaigns !== 1 ? "s" : ""}</div>
+                      </div>
+                      <Badge color={row.outstanding > 0 ? "orange" : "green"}>{fmtN(row.outstanding)} outstanding</Badge>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 10 }}>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Budget</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{fmtN(row.budget)}</div></div>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Committed</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{fmtN(row.committed)}</div></div>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Available</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4, color: row.available < 0 ? "var(--red)" : "var(--green)" }}>{fmtN(row.available)}</div></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+
+      <Card style={{ marginTop: 18, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Invoice & Payment Register</h2>
+            <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Monitor every MPO through invoice receipt, payment processing, and close-out.</p>
+          </div>
+          <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Invoice and Payment Register", ["MPO No.", "Vendor", "Client", "Campaign", "Invoice No.", "Invoice Date", "Invoice Status", "Payment Status", "Payment Ref", "Paid At", "Age (Days)", "Outstanding"], invoiceAgingRows.map(row => [row.mpoNo, row.vendor, row.client, row.campaign, row.invoiceNo, row.invoiceDate, row.invoiceStatus, row.paymentStatus, row.paymentReference, row.paidAt, row.ageDays, row.outstanding]))}>Export Register</Btn>
+        </div>
+        {invoiceAgingRows.length === 0 ? <Empty icon="💳" title="No invoice rows yet" sub="Record invoice and payment details in MPO execution to populate this register." /> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+              <thead>
+                <tr style={{ background: "var(--bg3)" }}>
+                  {["MPO", "Vendor / Client", "Invoice", "Status", "Payment Ref", "Age", "Outstanding"].map(header => <th key={header} style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>{header}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {invoiceAgingRows.slice(0, 18).map((row, index) => (
+                  <tr key={`${row.mpoNo}-${index}`} style={{ borderBottom: "1px solid var(--border)", background: index % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
+                    <td style={{ padding: "9px 10px", fontSize: 12, fontWeight: 700 }}>{row.mpoNo}<div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 400, marginTop: 3 }}>{row.campaign}</div></td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}>{row.vendor}<div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.client}</div></td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}>{row.invoiceNo}<div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.invoiceDate}</div></td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><Badge color={row.invoiceStatus === "approved" ? "green" : row.invoiceStatus === "received" ? "blue" : row.invoiceStatus === "disputed" ? "red" : "accent"}>{row.invoiceStatus}</Badge><Badge color={row.paymentStatus === "paid" ? "green" : row.paymentStatus === "processing" ? "blue" : row.paymentStatus === "disputed" ? "red" : "orange"}>{row.paymentStatus}</Badge></div></td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}>{row.paymentReference}<div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.paidAt}</div></td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}>{row.ageDays}d</td>
+                    <td style={{ padding: "9px 10px", fontSize: 12, fontWeight: 700, color: row.outstanding > 0 ? "var(--red)" : "var(--green)" }}>{fmtN(row.outstanding)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {invoiceAgingRows.length > 18 ? <div style={{ marginTop: 10, fontSize: 12, color: "var(--text3)" }}>Showing 18 of {invoiceAgingRows.length} rows in-app. Use export for the full register.</div> : null}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Monthly Budget vs Cashflow</h2>
+            <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Watch commitments, invoicing, and cash outflow by period.</p>
+          </div>
+          <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Monthly Budget vs Cashflow", ["Period", "Budget", "Committed", "Invoiced", "Paid", "Outstanding"], monthlyCashflow.map(row => [row.period, row.budget, row.committed, row.invoiced, row.paid, row.outstanding]))}>Export Cashflow</Btn>
+        </div>
+        {monthlyCashflow.length === 0 ? <Empty icon="📅" title="No monthly cashflow yet" sub="Invoices and MPOs will populate the monthly cashflow view." /> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <thead>
+                <tr style={{ background: "var(--bg3)" }}>
+                  {["Period", "Budget", "Committed", "Invoiced", "Paid", "Outstanding"].map(header => <th key={header} style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>{header}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {monthlyCashflow.map((row, index) => (
+                  <tr key={row.period} style={{ borderBottom: "1px solid var(--border)", background: index % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
+                    <td style={{ padding: "9px 10px", fontSize: 12, fontWeight: 700 }}>{row.period}</td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}>{fmtN(row.budget)}</td>
+                    <td style={{ padding: "9px 10px", fontSize: 12, color: "var(--accent)", fontWeight: 700 }}>{fmtN(row.committed)}</td>
+                    <td style={{ padding: "9px 10px", fontSize: 12 }}>{fmtN(row.invoiced)}</td>
+                    <td style={{ padding: "9px 10px", fontSize: 12, color: "var(--green)", fontWeight: 700 }}>{fmtN(row.paid)}</td>
+                    <td style={{ padding: "9px 10px", fontSize: 12, color: row.outstanding > 0 ? "var(--red)" : "var(--text2)", fontWeight: row.outstanding > 0 ? 700 : 400 }}>{fmtN(row.outstanding)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+};
+
+
+const CloseoutPage = ({ vendors, clients, campaigns, mpos, onOpenReceivables }) => {
+  const [toast, setToast] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [filters, setFilters] = useState({ clientId: "", proofStatus: "", reconciliationStatus: "", closeoutStage: "", search: "" });
+
+  const liveClients = activeOnly(clients);
+  const liveCampaigns = activeOnly(campaigns);
+  const liveMpos = activeOnly(mpos);
+  const updateFilter = (key) => (value) => setFilters(prev => ({ ...prev, [key]: value }));
+  const stageRank = { live: 1, reconciling: 2, billed: 3, collecting: 4, closed: 5, exception: 6 };
+
+  const getCloseoutStage = (mpo) => {
+    const proof = String(mpo?.proofStatus || "pending").toLowerCase();
+    const recon = String(mpo?.reconciliationStatus || "not_started").toLowerCase();
+    const invoice = String(mpo?.invoiceStatus || "pending").toLowerCase();
+    const payment = String(mpo?.paymentStatus || "unpaid").toLowerCase();
+    const status = String(mpo?.status || "draft").toLowerCase();
+    if ([proof, recon, invoice, payment].includes("disputed")) return "exception";
+    if (status === "closed" || (payment === "paid" && recon === "completed")) return "closed";
+    if (payment === "processing" || (payment === "unpaid" && recon === "completed" && invoice !== "pending")) return "collecting";
+    if (invoice !== "pending" && recon === "completed") return "billed";
+    if (status === "aired" || recon === "in_progress" || recon === "ready" || proof !== "pending") return "reconciling";
+    return "live";
+  };
+
+  const getCloseoutLabel = (stage) => ({
+    live: "Live",
+    reconciling: "Reconciling",
+    billed: "Billed",
+    collecting: "Collecting",
+    closed: "Closed",
+    exception: "Exception",
+  }[stage] || stage);
+
+  const getCloseoutColor = (stage) => ({
+    live: "blue",
+    reconciling: "purple",
+    billed: "accent",
+    collecting: "orange",
+    closed: "green",
+    exception: "red",
+  }[stage] || "gray");
+
+  const filteredMpos = liveMpos.filter(mpo => {
+    const campaign = liveCampaigns.find(row => row.id === mpo.campaignId);
+    const client = liveClients.find(row => row.id === campaign?.clientId);
+    const stage = getCloseoutStage(mpo);
+    if (filters.clientId && (campaign?.clientId || "") !== filters.clientId) return false;
+    if (filters.proofStatus && String(mpo.proofStatus || "pending") !== filters.proofStatus) return false;
+    if (filters.reconciliationStatus && String(mpo.reconciliationStatus || "not_started") !== filters.reconciliationStatus) return false;
+    if (filters.closeoutStage && stage !== filters.closeoutStage) return false;
+    const term = filters.search.trim().toLowerCase();
+    if (!term) return true;
+    return [mpo.mpoNo, mpo.vendorName, mpo.clientName, mpo.campaignName, mpo.brand, mpo.invoiceNo, mpo.paymentReference, campaign?.name, client?.name, stage]
+      .some(value => String(value || "").toLowerCase().includes(term));
+  });
+
+  const closeoutRows = filteredMpos.map(mpo => {
+    const campaign = liveCampaigns.find(row => row.id === mpo.campaignId);
+    const client = liveClients.find(row => row.id === campaign?.clientId);
+    const planned = Number(mpo.plannedSpotsExecution ?? mpo.totalSpots) || 0;
+    const aired = Number(mpo.airedSpots) || 0;
+    const missed = Number(mpo.missedSpots) || Math.max(planned - aired, 0);
+    const makegood = Number(mpo.makegoodSpots) || 0;
+    const deliveryPct = planned > 0 ? (aired / planned) * 100 : (aired > 0 ? 100 : 0);
+    const variance = aired - planned;
+    const value = Number(mpo.reconciledAmount) || Number(mpo.invoiceAmount) || Number(mpo.grandTotal) || Number(mpo.netVal) || 0;
+    const stage = getCloseoutStage(mpo);
+    const proof = String(mpo.proofStatus || "pending");
+    const recon = String(mpo.reconciliationStatus || "not_started");
+    const invoice = String(mpo.invoiceStatus || "pending");
+    const payment = String(mpo.paymentStatus || "unpaid");
+    const completeness = [
+      mpo.dispatchStatus && mpo.dispatchStatus !== "pending",
+      proof !== "pending",
+      aired > 0 || planned > 0,
+      recon === "completed",
+      invoice !== "pending",
+      payment === "paid" || String(mpo.status || "").toLowerCase() === "closed",
+    ].filter(Boolean).length / 6 * 100;
+    const readyToBill = recon === "completed" && ["received", "approved"].includes(proof);
+    const readyToClose = readyToBill && (payment === "paid" || String(mpo.status || "").toLowerCase() === "closed");
+    return {
+      id: mpo.id,
+      mpoNo: mpo.mpoNo || "—",
+      campaign: campaign?.name || mpo.campaignName || "—",
+      client: client?.name || mpo.clientName || "—",
+      vendor: mpo.vendorName || "—",
+      brand: campaign?.brand || mpo.brand || "—",
+      planned,
+      aired,
+      missed,
+      makegood,
+      deliveryPct,
+      variance,
+      proofStatus: proof,
+      reconciliationStatus: recon,
+      invoiceStatus: invoice,
+      paymentStatus: payment,
+      reconciledAmount: value,
+      stage,
+      stageLabel: getCloseoutLabel(stage),
+      stageColor: getCloseoutColor(stage),
+      completeness,
+      readyToBill,
+      readyToClose,
+      invoiceNo: mpo.invoiceNo || "—",
+      paymentReference: mpo.paymentReference || "—",
+      proofReceivedAt: mpo.proofReceivedAt ? new Date(mpo.proofReceivedAt).toLocaleDateString("en-NG") : "—",
+      paidAt: mpo.paidAt ? new Date(mpo.paidAt).toLocaleDateString("en-NG") : "—",
+      notes: mpo.reconciliationNotes || "",
+    };
+  }).sort((a, b) => (stageRank[a.stage] || 0) - (stageRank[b.stage] || 0) || b.reconciledAmount - a.reconciledAmount);
+
+  const stageSummary = ["live", "reconciling", "billed", "collecting", "closed", "exception"].map(stage => {
+    const rows = closeoutRows.filter(row => row.stage === stage);
+    return { stage, label: getCloseoutLabel(stage), color: getCloseoutColor(stage), count: rows.length, value: rows.reduce((sum, row) => sum + row.reconciledAmount, 0) };
+  });
+
+  const makegoodRows = closeoutRows.filter(row => row.missed > 0 || row.makegood > 0 || row.proofStatus === "disputed" || row.reconciliationStatus === "disputed");
+  const billingRows = closeoutRows.filter(row => row.readyToBill || row.stage === "collecting" || row.stage === "closed");
+  const collectionsRows = closeoutRows.filter(row => ["billed", "collecting", "closed"].includes(row.stage));
+  const totalValue = closeoutRows.reduce((sum, row) => sum + row.reconciledAmount, 0);
+  const readyToBillCount = closeoutRows.filter(row => row.readyToBill).length;
+  const proofPendingCount = closeoutRows.filter(row => row.proofStatus === "pending").length;
+  const exceptionCount = closeoutRows.filter(row => row.stage === "exception").length;
+  const closedCount = closeoutRows.filter(row => row.stage === "closed").length;
+  const openMakegoodCount = makegoodRows.filter(row => row.missed > row.makegood || row.proofStatus === "disputed" || row.reconciliationStatus === "disputed").length;
+  const collectionsExposure = closeoutRows.filter(row => row.stage !== "closed").reduce((sum, row) => sum + row.reconciledAmount, 0);
+  const avgDelivery = closeoutRows.length ? closeoutRows.reduce((sum, row) => sum + Math.min(row.deliveryPct, 100), 0) / closeoutRows.length : 0;
+
+  const exportView = (title, headers, rows) => {
+    if (!rows.length) {
+      setToast({ msg: `No data to export for ${title}.`, type: "error" });
+      return;
+    }
+    const esc = v => String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const htmlRows = rows.map(row => `<tr>${row.map((cell, i) => `<td style="padding:6px 9px;border:1px solid #ddd;font-size:10px;${i===0?"font-weight:600":""}">${esc(cell)}</td>`).join("")}</tr>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#000;margin:0}
+        h1{font-size:18px;margin-bottom:4px;color:#0A1F44}
+        p{font-size:11px;color:#555;margin-bottom:16px}
+        table{width:100%;border-collapse:collapse;margin-top:8px}
+        th{background:#0A1F44;color:#fff;padding:7px 9px;font-size:10px;text-align:left;border:1px solid #0A1F44}
+        tr:nth-child(even){background:#F5F7FA}
+      </style>
+    </head><body>
+      <h1>${title}</h1>
+      <p>Generated ${new Date().toLocaleString("en-NG")}</p>
+      <table><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr>${htmlRows}</table>
+    </body></html>`;
+    const csv = buildCSV(rows, headers);
+    setPreview({ html, csv, title });
+  };
+
+  const exportCloseoutPack = (row) => {
+    const completenessColor = row.completeness >= 100 ? "#16a34a" : row.completeness >= 70 ? "#f59e0b" : "#ef4444";
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Closeout Pack - ${row.mpoNo}</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:28px;color:#111;margin:0;background:#fff}
+        h1{font-size:22px;margin:0 0 4px;color:#0A1F44}
+        h2{font-size:14px;margin:0 0 10px;color:#0A1F44;text-transform:uppercase;letter-spacing:.08em}
+        .muted{font-size:12px;color:#666}
+        .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}
+        .card{border:1px solid #d6dde8;border-radius:12px;padding:14px 16px;background:#f8fafc}
+        .label{font-size:10px;color:#667085;text-transform:uppercase;letter-spacing:.08em}
+        .value{font-size:16px;font-weight:700;margin-top:6px}
+        table{width:100%;border-collapse:collapse;margin-top:8px}
+        th,td{border:1px solid #d6dde8;padding:8px 10px;text-align:left;font-size:11px}
+        th{background:#0A1F44;color:#fff}
+        .pill{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#eef2ff;color:#312e81}
+      </style>
+    </head><body>
+      <h1>Campaign Closeout Pack</h1>
+      <div class="muted">Generated ${new Date().toLocaleString("en-NG")}</div>
+      <div class="grid">
+        <div class="card"><div class="label">MPO</div><div class="value">${row.mpoNo}</div><div class="muted">${row.campaign}</div></div>
+        <div class="card"><div class="label">Client / Brand</div><div class="value">${row.client}</div><div class="muted">${row.brand}</div></div>
+        <div class="card"><div class="label">Vendor</div><div class="value">${row.vendor}</div><div class="muted">Closeout stage: ${row.stageLabel}</div></div>
+      </div>
+      <div class="grid">
+        <div class="card"><div class="label">Delivery</div><div class="value">${row.aired} / ${row.planned} spots</div><div class="muted">${row.deliveryPct.toFixed(1)}% delivered</div></div>
+        <div class="card"><div class="label">Make-good</div><div class="value">${row.makegood} spots</div><div class="muted">Missed: ${row.missed}</div></div>
+        <div class="card"><div class="label">Reconciled Amount</div><div class="value">${fmtN(row.reconciledAmount)}</div><div class="muted">Invoice: ${row.invoiceNo}</div></div>
+      </div>
+      <div class="card" style="margin-bottom:18px">
+        <h2>Closure Health</h2>
+        <div class="muted">Completeness</div>
+        <div style="margin-top:8px;height:10px;border-radius:999px;background:#e5e7eb;overflow:hidden"><div style="width:${Math.min(row.completeness,100)}%;height:100%;background:${completenessColor}"></div></div>
+        <div class="muted" style="margin-top:8px">${row.completeness.toFixed(0)}% complete · Proof ${row.proofStatus} · Reconciliation ${row.reconciliationStatus} · Payment ${row.paymentStatus}</div>
+      </div>
+      <h2>Closeout Checklist</h2>
+      <table>
+        <tr><th>Checkpoint</th><th>Status</th><th>Detail</th></tr>
+        <tr><td>Proof of airing</td><td>${row.proofStatus}</td><td>Received: ${row.proofReceivedAt}</td></tr>
+        <tr><td>Reconciliation</td><td>${row.reconciliationStatus}</td><td>${row.notes || "No reconciliation notes recorded."}</td></tr>
+        <tr><td>Billing readiness</td><td>${row.readyToBill ? "Ready" : "Pending"}</td><td>Invoice ${row.invoiceStatus}</td></tr>
+        <tr><td>Collection / payment</td><td>${row.paymentStatus}</td><td>Reference: ${row.paymentReference} · Paid at: ${row.paidAt}</td></tr>
+        <tr><td>Final status</td><td>${row.readyToClose ? "Ready to close" : row.stageLabel}</td><td>Workflow stage aligned to current MPO finance fields.</td></tr>
+      </table>
+    </body></html>`;
+    setPreview({ html, csv: "", title: `Closeout Pack - ${row.mpoNo}` });
+  };
+
+  const filterInputStyle = {
+    background: "var(--bg3)",
+    border: "1px solid var(--border2)",
+    borderRadius: 8,
+    padding: "9px 13px",
+    color: "var(--text)",
+    fontSize: 13,
+    outline: "none",
+    width: "100%",
+  };
+
+  return (
+    <div className="fade">
+      {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+      {preview && <PrintPreview html={preview.html} csv={preview.csv} pdfBytes={preview.pdfBytes} title={preview.title} onClose={() => setPreview(null)} />}
+
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>Campaign Reconciliation & Performance Closeout</h1>
+        <p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Manage proof of airing, variance, make-goods, billing readiness, and campaign closure from one end-of-flight workspace.</p>
+      </div>
+
+      <Card style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>Closeout Filters</h2>
+            <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Slice execution and closure signals by client, proof, reconciliation, stage, and keyword.</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="ghost" size="sm" onClick={() => setFilters({ clientId: "", proofStatus: "", reconciliationStatus: "", closeoutStage: "", search: "" })}>Reset</Btn>
+            <Btn variant="blue" size="sm" icon="⬇" onClick={() => exportView("Closeout Summary", ["Metric", "Value"], [["MPO Value in Closeout", totalValue], ["Ready to Bill", readyToBillCount], ["Proof Pending", proofPendingCount], ["Open Make-good Items", openMakegoodCount], ["Exceptions", exceptionCount], ["Closed", closedCount], ["Collections Exposure", collectionsExposure], ["Average Delivery", `${avgDelivery.toFixed(1)}%`]])}>Export Summary</Btn>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
+          <Field label="Client" value={filters.clientId} onChange={updateFilter("clientId")} options={liveClients.map(client => ({ value: client.id, label: client.name }))} placeholder="All Clients" />
+          <Field label="Proof Status" value={filters.proofStatus} onChange={updateFilter("proofStatus")} options={MPO_PROOF_STATUS_OPTIONS} placeholder="All Proof States" />
+          <Field label="Reconciliation" value={filters.reconciliationStatus} onChange={updateFilter("reconciliationStatus")} options={[...MPO_RECON_STATUS_OPTIONS, { value: "disputed", label: "Disputed" }]} placeholder="All Reconciliation States" />
+          <Field label="Closeout Stage" value={filters.closeoutStage} onChange={updateFilter("closeoutStage")} options={[{ value: "live", label: "Live" }, { value: "reconciling", label: "Reconciling" }, { value: "billed", label: "Billed" }, { value: "collecting", label: "Collecting" }, { value: "closed", label: "Closed" }, { value: "exception", label: "Exception" }]} placeholder="All Stages" />
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 5, display: "block" }}>Search</label>
+            <input value={filters.search} onChange={e => updateFilter("search")(e.target.value)} placeholder="MPO, campaign, vendor, invoice..." style={filterInputStyle} />
+          </div>
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 22 }}>
+        <Stat icon="📦" label="Closeout Value" value={fmtN(totalValue)} sub={`${closeoutRows.length} MPOs`} color="var(--accent)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="🧾" label="Ready to Bill" value={readyToBillCount} sub="Reconciled delivery ready" color="var(--blue)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="📎" label="Proof Pending" value={proofPendingCount} sub="Awaiting proof of airing" color="var(--purple)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="🔁" label="Open Make-goods" value={openMakegoodCount} sub="Missed or disputed delivery" color="var(--orange)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="🚨" label="Exceptions" value={exceptionCount} sub="Disputed closeout items" color="var(--red)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="✅" label="Closed" value={closedCount} sub={`${avgDelivery.toFixed(1)}% avg delivery`} color="var(--green)" valueSize="clamp(16px, 1.7vw, 22px)" />
+      </div>
+
+      <Card style={{ marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Closeout Pipeline</h2>
+            <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Track MPOs through live delivery, reconciliation, billing, collection, and final closure.</p>
+          </div>
+          <Btn variant="ghost" size="sm" onClick={() => exportView("Closeout Pipeline", ["Stage", "Count", "Value"], stageSummary.map(row => [row.label, row.count, row.value]))}>Export Pipeline</Btn>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+          {stageSummary.map(row => (
+            <div key={row.stage} style={{ padding: "12px 14px", borderRadius: 12, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", fontWeight: 700 }}>{row.label}</div>
+                <Badge color={row.color}>{row.count}</Badge>
+              </div>
+              <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 20, marginTop: 10 }}>{fmtN(row.value)}</div>
+              <div style={{ fontSize: 11, color: "var(--text2)", marginTop: 4 }}>{row.count === 1 ? "1 MPO" : `${row.count} MPOs`}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.12fr .88fr", gap: 18, alignItems: "start" }}>
+        <Card>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+            <div>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Execution Variance & Billing Readiness</h2>
+              <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Compare planned vs aired spots and identify which MPOs are ready for billing or closure.</p>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Btn variant="ghost" size="sm" onClick={() => setPage && setPage("mpo")}>Open MPO Workspace</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Execution Variance and Billing Readiness", ["MPO No.", "Campaign", "Client", "Vendor", "Planned", "Aired", "Missed", "Make-good", "Delivery %", "Proof", "Reconciliation", "Invoice", "Payment", "Stage", "Ready to Bill", "Ready to Close", "Reconciled Amount"], closeoutRows.map(row => [row.mpoNo, row.campaign, row.client, row.vendor, row.planned, row.aired, row.missed, row.makegood, `${row.deliveryPct.toFixed(1)}%`, row.proofStatus, row.reconciliationStatus, row.invoiceStatus, row.paymentStatus, row.stageLabel, row.readyToBill ? "Yes" : "No", row.readyToClose ? "Yes" : "No", row.reconciledAmount]))}>Export Matrix</Btn>
+            </div>
+          </div>
+          {closeoutRows.length === 0 ? <Empty icon="📑" title="No closeout rows yet" sub="As campaigns air and proofs arrive, closeout signals will appear here." /> : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1120 }}>
+                <thead>
+                  <tr style={{ background: "var(--bg3)" }}>
+                    {["MPO / Campaign", "Delivery", "Proof / Recon", "Billing", "Closeout", "Pack"].map(header => <th key={header} style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>{header}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {closeoutRows.slice(0, 18).map((row, index) => {
+                    const deliveryColor = row.deliveryPct >= 100 ? "var(--green)" : row.deliveryPct >= 80 ? "var(--orange)" : "var(--red)";
+                    return (
+                      <tr key={row.id} style={{ borderBottom: "1px solid var(--border)", background: index % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
+                        <td style={{ padding: "9px 10px", fontSize: 12, fontWeight: 700 }}>{row.mpoNo}<div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 400, marginTop: 3 }}>{row.campaign} · {row.client}</div><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.vendor}</div></td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1, minWidth: 84, height: 8, borderRadius: 999, background: "var(--bg4)", overflow: "hidden" }}><div style={{ width: `${Math.min(row.deliveryPct, 100)}%`, height: "100%", background: deliveryColor }} /></div><span style={{ color: deliveryColor, fontWeight: 700 }}>{row.deliveryPct.toFixed(1)}%</span></div><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4 }}>Planned {row.planned} · Aired {row.aired} · Missed {row.missed} · Make-good {row.makegood}</div></td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><Badge color={row.proofStatus === "received" ? "green" : row.proofStatus === "partial" ? "orange" : row.proofStatus === "disputed" ? "red" : "accent"}>{row.proofStatus}</Badge><Badge color={row.reconciliationStatus === "completed" ? "green" : row.reconciliationStatus === "ready" ? "blue" : row.reconciliationStatus === "disputed" ? "red" : "purple"}>{row.reconciliationStatus}</Badge></div><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 5 }}>{row.proofReceivedAt}</div></td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><Badge color={row.invoiceStatus === "approved" ? "green" : row.invoiceStatus === "received" ? "blue" : row.invoiceStatus === "disputed" ? "red" : "accent"}>{row.invoiceStatus}</Badge><Badge color={row.paymentStatus === "paid" ? "green" : row.paymentStatus === "processing" ? "blue" : row.paymentStatus === "disputed" ? "red" : "orange"}>{row.paymentStatus}</Badge></div><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 5 }}>{fmtN(row.reconciledAmount)}</div></td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}><Badge color={row.stageColor}>{row.stageLabel}</Badge><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 6 }}>{row.readyToBill ? "Ready to bill" : "Billing pending"} · {row.readyToClose ? "Ready to close" : "Still open"}</div><div style={{ marginTop: 6, height: 6, background: "var(--bg4)", borderRadius: 999, overflow: "hidden" }}><div style={{ width: `${Math.min(row.completeness, 100)}%`, height: "100%", background: row.completeness >= 100 ? "var(--green)" : row.completeness >= 70 ? "var(--orange)" : "var(--red)" }} /></div></td>
+                        <td style={{ padding: "9px 10px", fontSize: 12 }}><Btn variant="ghost" size="sm" onClick={() => exportCloseoutPack(row)}>Export Pack</Btn></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {closeoutRows.length > 18 ? <div style={{ marginTop: 10, fontSize: 12, color: "var(--text3)" }}>Showing 18 of {closeoutRows.length} rows in-app. Use export for the full matrix.</div> : null}
+            </div>
+          )}
+        </Card>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Make-good & Exception Tracker</h2>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Make-good and Exception Tracker", ["MPO No.", "Campaign", "Vendor", "Missed", "Make-good", "Proof", "Reconciliation", "Stage", "Notes"], makegoodRows.map(row => [row.mpoNo, row.campaign, row.vendor, row.missed, row.makegood, row.proofStatus, row.reconciliationStatus, row.stageLabel, row.notes]))}>Export Tracker</Btn>
+            </div>
+            {makegoodRows.length === 0 ? <Empty icon="🔁" title="No make-good issues" sub="Missed spots and disputes will surface here for follow-up." /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {makegoodRows.slice(0, 6).map(row => (
+                  <div key={row.id} style={{ padding: "11px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mpoNo}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{row.campaign} · {row.vendor}</div>
+                      </div>
+                      <Badge color={row.missed > row.makegood || row.stage === "exception" ? "red" : "orange"}>{row.stageLabel}</Badge>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 10 }}>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Missed</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{row.missed}</div></div>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Make-good</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{row.makegood}</div></div>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Proof / Recon</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{row.proofStatus} / {row.reconciliationStatus}</div></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Billing & Collections Watchlist</h2>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Billing and Collections Watchlist", ["MPO No.", "Client", "Campaign", "Stage", "Invoice Status", "Payment Status", "Ready to Bill", "Amount", "Payment Ref", "Paid At"], collectionsRows.map(row => [row.mpoNo, row.client, row.campaign, row.stageLabel, row.invoiceStatus, row.paymentStatus, row.readyToBill ? "Yes" : "No", row.reconciledAmount, row.paymentReference, row.paidAt]))}>Export Watchlist</Btn>
+            </div>
+            {billingRows.length === 0 ? <Empty icon="💼" title="No billing items yet" sub="Completed reconciliation will move rows into this watchlist." /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {billingRows.slice(0, 6).map(row => (
+                  <div key={row.id} style={{ padding: "11px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{row.client}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{row.mpoNo} · {row.campaign}</div>
+                      </div>
+                      <Badge color={row.stageColor}>{row.stageLabel}</Badge>
+                    </div>
+                    <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: "var(--text3)" }}>Exposure</div>
+                        <div style={{ fontSize: 14, fontWeight: 800, marginTop: 3 }}>{fmtN(row.reconciledAmount)}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 11, color: "var(--text3)" }}>{row.readyToBill ? "Ready to bill" : "Needs follow-up"}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>{row.paymentStatus === "paid" ? row.paidAt : row.invoiceStatus}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivablesMeta, onSaveReceivable, onRemoveReceivable, onLogReceivablePayment, onUpdateReceivableStatus, onOpenCloseout }) => {
+  const [toast, setToast] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [filters, setFilters] = useState({ clientId: "", status: "", dueBucket: "", search: "" });
+  const [formModal, setFormModal] = useState(null);
+  const [paymentModal, setPaymentModal] = useState(null);
+  const [formBusy, setFormBusy] = useState(false);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+
+  const liveClients = activeOnly(clients);
+  const liveCampaigns = activeOnly(campaigns);
+  const liveMpos = activeOnly(mpos);
+  const updateFilter = (key) => (value) => setFilters(prev => ({ ...prev, [key]: value }));
+
+  const statusOptions = [
+    { value: "draft", label: "Draft" },
+    { value: "issued", label: "Issued" },
+    { value: "part_paid", label: "Part Paid" },
+    { value: "paid", label: "Paid" },
+    { value: "overdue", label: "Overdue" },
+    { value: "disputed", label: "Disputed" },
+    { value: "write_off", label: "Written Off" },
+  ];
+  const stageOptions = [
+    { value: "invoicing", label: "Invoicing" },
+    { value: "follow_up", label: "Follow-up" },
+    { value: "promise_to_pay", label: "Promise to Pay" },
+    { value: "escalated", label: "Escalated" },
+    { value: "resolved", label: "Resolved" },
+  ];
+  const paymentChannelOptions = [
+    { value: "bank_transfer", label: "Bank Transfer" },
+    { value: "cash", label: "Cash" },
+    { value: "cheque", label: "Cheque" },
+    { value: "card", label: "Card" },
+    { value: "other", label: "Other" },
+  ];
+
+  const getStatusLabel = (status) => (statusOptions.find(option => option.value === status)?.label || status || "—");
+  const getStageLabel = (stage) => (stageOptions.find(option => option.value === stage)?.label || stage || "—");
+  const getStatusColor = (status) => ({ draft: "accent", issued: "blue", part_paid: "orange", paid: "green", overdue: "red", disputed: "purple", write_off: "gray" }[status] || "accent");
+  const getAgingBucket = (daysPastDue, balance) => {
+    if ((Number(balance) || 0) <= 0) return "paid";
+    if (daysPastDue <= 0) return "current";
+    if (daysPastDue <= 30) return "1_30";
+    if (daysPastDue <= 60) return "31_60";
+    if (daysPastDue <= 90) return "61_90";
+    return "90_plus";
+  };
+  const getAgingLabel = (bucket) => ({ current: "Current", "1_30": "1-30 Days", "31_60": "31-60 Days", "61_90": "61-90 Days", "90_plus": "90+ Days", paid: "Paid" }[bucket] || bucket);
+
+  const buildBlankForm = () => ({
+    id: uid(),
+    mpoId: "",
+    clientId: "",
+    campaignId: "",
+    invoiceNo: "",
+    invoiceDate: isoToday(),
+    dueDate: addDaysToIso(isoToday(), 30),
+    grossAmount: "",
+    status: "draft",
+    collectionStage: "invoicing",
+    owner: user?.name || "",
+    notes: "",
+    payments: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const receivableRows = (receivables || []).map(record => {
+    const normalized = normalizeReceivableRecord(record);
+    const campaign = liveCampaigns.find(item => item.id === normalized.campaignId) || liveCampaigns.find(item => item.id === liveMpos.find(mpo => mpo.id === normalized.mpoId)?.campaignId);
+    const client = liveClients.find(item => item.id === normalized.clientId) || liveClients.find(item => item.id === campaign?.clientId);
+    const mpo = liveMpos.find(item => item.id === normalized.mpoId);
+    const daysPastDue = getDaysPastDue(normalized.dueDate, normalized.balance);
+    const agingBucket = getAgingBucket(daysPastDue, normalized.balance);
+    return {
+      ...normalized,
+      clientName: client?.name || mpo?.clientName || "—",
+      campaignName: campaign?.name || mpo?.campaignName || "—",
+      brand: campaign?.brand || mpo?.brand || "—",
+      mpoNo: mpo?.mpoNo || "—",
+      daysPastDue,
+      agingBucket,
+      collectionProgress: normalized.grossAmount > 0 ? (normalized.amountReceived / normalized.grossAmount) * 100 : 0,
+      paymentCount: normalized.payments.length,
+      latestPayment: normalized.payments[0] || null,
+    };
+  }).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+
+  const filteredRows = receivableRows.filter(row => {
+    if (filters.clientId && row.clientId !== filters.clientId) return false;
+    if (filters.status && row.status !== filters.status) return false;
+    if (filters.dueBucket && row.agingBucket !== filters.dueBucket) return false;
+    const term = filters.search.trim().toLowerCase();
+    if (!term) return true;
+    return [row.invoiceNo, row.clientName, row.campaignName, row.brand, row.mpoNo, row.owner, row.notes, row.status, row.collectionStage]
+      .some(value => String(value || "").toLowerCase().includes(term));
+  });
+
+  const billingCandidates = liveMpos.filter(mpo => {
+    const recon = String(mpo?.reconciliationStatus || "not_started").toLowerCase();
+    const proof = String(mpo?.proofStatus || "pending").toLowerCase();
+    return recon === "completed" && ["received", "approved"].includes(proof) && !receivableRows.some(row => row.mpoId === mpo.id);
+  }).map(mpo => {
+    const campaign = liveCampaigns.find(item => item.id === mpo.campaignId);
+    const client = liveClients.find(item => item.id === campaign?.clientId);
+    const amount = Number(mpo.reconciledAmount) || Number(mpo.invoiceAmount) || Number(mpo.grandTotal) || Number(mpo.netVal) || 0;
+    return {
+      id: mpo.id,
+      mpoNo: mpo.mpoNo || "—",
+      campaignId: campaign?.id || mpo.campaignId || "",
+      campaignName: campaign?.name || mpo.campaignName || "—",
+      clientId: client?.id || campaign?.clientId || "",
+      clientName: client?.name || mpo.clientName || "—",
+      vendorName: mpo.vendorName || "—",
+      amount,
+      mpo,
+      campaign,
+      client,
+    };
+  }).sort((a, b) => b.amount - a.amount);
+
+  const totalGross = filteredRows.reduce((sum, row) => sum + row.grossAmount, 0);
+  const totalReceived = filteredRows.reduce((sum, row) => sum + row.amountReceived, 0);
+  const totalBalance = filteredRows.reduce((sum, row) => sum + row.balance, 0);
+  const overdueBalance = filteredRows.filter(row => row.agingBucket !== "current" && row.agingBucket !== "paid").reduce((sum, row) => sum + row.balance, 0);
+  const paidValue = filteredRows.filter(row => row.status === "paid").reduce((sum, row) => sum + row.grossAmount, 0);
+  const collectionRate = totalGross > 0 ? (totalReceived / totalGross) * 100 : 0;
+  const overdueCount = filteredRows.filter(row => row.status === "overdue").length;
+  const disputedCount = filteredRows.filter(row => row.status === "disputed").length;
+  const agingSummary = ["current", "1_30", "31_60", "61_90", "90_plus"].map(bucket => ({
+    bucket,
+    label: getAgingLabel(bucket),
+    balance: filteredRows.filter(row => row.agingBucket === bucket).reduce((sum, row) => sum + row.balance, 0),
+    count: filteredRows.filter(row => row.agingBucket === bucket).length,
+  }));
+
+  const exportView = (title, headers, rows) => {
+    if (!rows.length) {
+      setToast({ msg: `No data to export for ${title}.`, type: "error" });
+      return;
+    }
+    const esc = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const htmlRows = rows.map(row => `<tr>${row.map((cell, index) => `<td style="padding:6px 9px;border:1px solid #ddd;font-size:10px;${index===0?"font-weight:600":""}">${esc(cell)}</td>`).join("")}</tr>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#111;margin:0}
+        h1{font-size:18px;margin-bottom:4px;color:#0A1F44}
+        p{font-size:11px;color:#555;margin-bottom:16px}
+        table{width:100%;border-collapse:collapse;margin-top:8px}
+        th{background:#0A1F44;color:#fff;padding:7px 9px;font-size:10px;text-align:left;border:1px solid #0A1F44}
+        tr:nth-child(even){background:#F5F7FA}
+      </style>
+    </head><body>
+      <h1>${title}</h1>
+      <p>Generated ${new Date().toLocaleString("en-NG")}</p>
+      <table><tr>${headers.map(header => `<th>${esc(header)}</th>`).join("")}</tr>${htmlRows}</table>
+    </body></html>`;
+    const csv = buildCSV(rows, headers);
+    setPreview({ html, csv, title });
+  };
+
+  const exportStatement = (row) => {
+    const paymentRows = row.payments.length
+      ? row.payments.map(payment => `<tr><td>${formatIsoDate(payment.receivedAt)}</td><td>${payment.reference || "—"}</td><td>${payment.channel || "—"}</td><td>${fmtN(payment.amount)}</td><td>${payment.note || "—"}</td></tr>`).join("")
+      : `<tr><td colspan="5" style="text-align:center;color:#667085">No payment logged yet.</td></tr>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Receivable Statement - ${row.invoiceNo}</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:28px;color:#111;margin:0;background:#fff}
+        h1{font-size:22px;margin:0 0 4px;color:#0A1F44}
+        h2{font-size:14px;margin:18px 0 10px;color:#0A1F44;text-transform:uppercase;letter-spacing:.08em}
+        .muted{font-size:12px;color:#666}
+        .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}
+        .card{border:1px solid #d6dde8;border-radius:12px;padding:14px 16px;background:#f8fafc}
+        .label{font-size:10px;color:#667085;text-transform:uppercase;letter-spacing:.08em}
+        .value{font-size:16px;font-weight:700;margin-top:6px}
+        table{width:100%;border-collapse:collapse;margin-top:8px}
+        th,td{border:1px solid #d6dde8;padding:8px 10px;text-align:left;font-size:11px}
+        th{background:#0A1F44;color:#fff}
+      </style>
+    </head><body>
+      <h1>Client Receivable Statement</h1>
+      <div class="muted">Generated ${new Date().toLocaleString("en-NG")}</div>
+      <div class="grid">
+        <div class="card"><div class="label">Client</div><div class="value">${row.clientName}</div></div>
+        <div class="card"><div class="label">Invoice No.</div><div class="value">${row.invoiceNo}</div></div>
+        <div class="card"><div class="label">Invoice / Due</div><div class="value">${formatIsoDate(row.invoiceDate)} / ${formatIsoDate(row.dueDate)}</div></div>
+        <div class="card"><div class="label">Status</div><div class="value">${getStatusLabel(row.status)}</div></div>
+      </div>
+      <div class="grid">
+        <div class="card"><div class="label">Gross Amount</div><div class="value">${fmtN(row.grossAmount)}</div></div>
+        <div class="card"><div class="label">Received</div><div class="value">${fmtN(row.amountReceived)}</div></div>
+        <div class="card"><div class="label">Outstanding</div><div class="value">${fmtN(row.balance)}</div></div>
+        <div class="card"><div class="label">Collection Stage</div><div class="value">${getStageLabel(row.collectionStage)}</div></div>
+      </div>
+      <h2>Context</h2>
+      <table>
+        <tr><th>MPO</th><td>${row.mpoNo}</td><th>Campaign</th><td>${row.campaignName}</td></tr>
+        <tr><th>Brand</th><td>${row.brand}</td><th>Owner</th><td>${row.owner || "—"}</td></tr>
+        <tr><th>Last Follow-up</th><td>${formatIsoDate(row.lastFollowUpAt)}</td><th>Notes</th><td>${row.notes || "—"}</td></tr>
+      </table>
+      <h2>Payment History</h2>
+      <table>
+        <tr><th>Date</th><th>Reference</th><th>Channel</th><th>Amount</th><th>Note</th></tr>
+        ${paymentRows}
+      </table>
+    </body></html>`;
+    const csvRows = row.payments.length
+      ? row.payments.map(payment => [row.invoiceNo, row.clientName, formatIsoDate(payment.receivedAt), payment.reference, payment.channel, payment.amount, payment.note])
+      : [[row.invoiceNo, row.clientName, "", "", "", 0, "No payment logged yet"]];
+    setPreview({ html, csv: buildCSV(csvRows, ["Invoice No.", "Client", "Payment Date", "Reference", "Channel", "Amount", "Note"]), title: `Statement - ${row.invoiceNo}` });
+  };
+
+  const openManualForm = () => setFormModal(buildBlankForm());
+  const openCandidateForm = (candidate) => {
+    const next = buildReceivableFromMpo({ mpo: candidate.mpo, campaign: candidate.campaign, client: candidate.client, owner: user?.name || "" });
+    setFormModal({ ...next, grossAmount: String(next.grossAmount) });
+  };
+  const openEditForm = (row) => setFormModal({ ...row, grossAmount: String(row.grossAmount || 0) });
+
+  const handleFormMpoChange = (mpoId) => {
+    const mpo = liveMpos.find(item => item.id === mpoId);
+    if (!mpo) return setFormModal(prev => ({ ...prev, mpoId: "" }));
+    const campaign = liveCampaigns.find(item => item.id === mpo.campaignId);
+    const client = liveClients.find(item => item.id === campaign?.clientId);
+    const grossAmount = Number(mpo.reconciledAmount) || Number(mpo.invoiceAmount) || Number(mpo.grandTotal) || Number(mpo.netVal) || 0;
+    setFormModal(prev => ({
+      ...prev,
+      mpoId,
+      clientId: client?.id || prev.clientId,
+      campaignId: campaign?.id || prev.campaignId,
+      invoiceNo: prev.invoiceNo || mpo.invoiceNo || `AR-${String(mpo.mpoNo || uid()).replace(/\s+/g, "-")}`,
+      grossAmount: grossAmount ? String(grossAmount) : prev.grossAmount,
+      notes: prev.notes || `Created from ${mpo.mpoNo || "MPO"}`,
+      status: prev.status === "draft" ? "issued" : prev.status,
+    }));
+  };
+
+  const saveReceivable = async () => {
+    if (!formModal || !onSaveReceivable) return;
+    const grossAmount = Number(formModal.grossAmount) || 0;
+    if (!formModal.clientId) return setToast({ msg: "Client is required.", type: "error" });
+    if (!formModal.invoiceNo.trim()) return setToast({ msg: "Invoice number is required.", type: "error" });
+    if (!formModal.invoiceDate || !formModal.dueDate) return setToast({ msg: "Invoice and due dates are required.", type: "error" });
+    if (grossAmount <= 0) return setToast({ msg: "Gross amount must be greater than zero.", type: "error" });
+    const existing = receivables.find(item => item.id === formModal.id);
+    const record = normalizeReceivableRecord({
+      ...(existing || {}),
+      ...formModal,
+      grossAmount,
+      owner: formModal.owner || user?.name || "",
+      payments: existing?.payments || formModal.payments || [],
+      createdAt: existing?.createdAt || formModal.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    try {
+      setFormBusy(true);
+      await onSaveReceivable(record);
+      setFormModal(null);
+      setToast({ msg: existing ? "Receivable updated." : "Receivable created.", type: "success" });
+    } catch (error) {
+      console.error("Failed to save receivable:", error);
+      setToast({ msg: error?.message || "Failed to save receivable.", type: "error" });
+    } finally {
+      setFormBusy(false);
+    }
+  };
+
+  const removeReceivable = async (recordId) => {
+    if (!onRemoveReceivable) return;
+    try {
+      await onRemoveReceivable(recordId);
+      setToast({ msg: "Receivable removed.", type: "success" });
+    } catch (error) {
+      console.error("Failed to remove receivable:", error);
+      setToast({ msg: error?.message || "Failed to remove receivable.", type: "error" });
+    }
+  };
+
+  const openPaymentEntry = (row) => {
+    if (row.balance <= 0) return setToast({ msg: "This receivable is already fully collected.", type: "error" });
+    setPaymentModal({ receivableId: row.id, amount: String(row.balance), receivedAt: isoToday(), reference: "", channel: "bank_transfer", note: "" });
+  };
+
+  const savePayment = async () => {
+    if (!paymentModal || !onLogReceivablePayment) return;
+    const amount = Number(paymentModal.amount) || 0;
+    if (amount <= 0) return setToast({ msg: "Payment amount must be greater than zero.", type: "error" });
+    const record = receivables.find(item => item.id === paymentModal.receivableId);
+    if (!record) return setToast({ msg: "Receivable not found.", type: "error" });
+    const normalized = normalizeReceivableRecord(record);
+    if (amount > normalized.balance) return setToast({ msg: "Payment cannot exceed the outstanding balance.", type: "error" });
+    const payment = normalizePaymentEntry({
+      amount,
+      receivedAt: paymentModal.receivedAt || isoToday(),
+      reference: paymentModal.reference || "",
+      channel: paymentModal.channel || "bank_transfer",
+      note: paymentModal.note || "",
+    });
+    try {
+      setPaymentBusy(true);
+      await onLogReceivablePayment(normalized.id, payment);
+      setPaymentModal(null);
+      setToast({ msg: "Payment logged successfully.", type: "success" });
+    } catch (error) {
+      console.error("Failed to log payment:", error);
+      setToast({ msg: error?.message || "Failed to log payment.", type: "error" });
+    } finally {
+      setPaymentBusy(false);
+    }
+  };
+
+  const updateQuickStatus = async (row, status) => {
+    if (!onUpdateReceivableStatus) return;
+    try {
+      await onUpdateReceivableStatus(row.id, {
+        status,
+        collectionStage: status === "paid" ? "resolved" : row.collectionStage,
+        lastFollowUpAt: status === row.status ? row.lastFollowUpAt : isoToday(),
+      });
+      setToast({ msg: `Status updated to ${getStatusLabel(status)}.`, type: "success" });
+    } catch (error) {
+      console.error("Failed to update receivable status:", error);
+      setToast({ msg: error?.message || "Failed to update status.", type: "error" });
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>Client Receivables & Collections</h1>
+          <p style={{ marginTop: 6, color: "var(--text3)", maxWidth: 860, lineHeight: 1.6 }}>Move collections out of inference and into a real ledger. Create invoice records, log partial payments, track overdue balances, and export client-ready statements from one workspace.</p>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Btn variant="secondary" onClick={openManualForm}>New Manual Invoice</Btn>
+          <Btn variant="ghost" onClick={() => onOpenCloseout && onOpenCloseout()}>Open Closeout</Btn>
+          <Btn variant="blue" icon="⬇" onClick={() => exportView("Receivables Ledger", ["Invoice No.", "Client", "Campaign", "MPO", "Invoice Date", "Due Date", "Status", "Collection Stage", "Gross Amount", "Received", "Outstanding", "Days Past Due", "Owner", "Notes"], filteredRows.map(row => [row.invoiceNo, row.clientName, row.campaignName, row.mpoNo, row.invoiceDate, row.dueDate, getStatusLabel(row.status), getStageLabel(row.collectionStage), row.grossAmount, row.amountReceived, row.balance, row.daysPastDue, row.owner, row.notes]))}>Export Ledger</Btn>
+        </div>
+      </div>
+
+      <Card style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>Ledger Filters</h2>
+          <div style={{ fontSize: 12, color: "var(--text3)" }}>{receivablesMeta?.mode === "supabase" ? "Live Supabase mode with realtime sync across invoices and payment logs." : receivablesMeta?.message || "Workspace local backup mode is active for receivables."}</div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 12 }}>
+          <Field label="Client" value={filters.clientId} onChange={updateFilter("clientId")} options={liveClients.map(client => ({ value: client.id, label: client.name }))} placeholder="All Clients" />
+          <Field label="Status" value={filters.status} onChange={updateFilter("status")} options={statusOptions} placeholder="All Statuses" />
+          <Field label="Aging Bucket" value={filters.dueBucket} onChange={updateFilter("dueBucket")} options={[{ value: "current", label: "Current" }, { value: "1_30", label: "1-30 Days" }, { value: "31_60", label: "31-60 Days" }, { value: "61_90", label: "61-90 Days" }, { value: "90_plus", label: "90+ Days" }, { value: "paid", label: "Paid" }]} placeholder="All Buckets" />
+          <Field label="Search" value={filters.search} onChange={updateFilter("search")} placeholder="Invoice no., client, MPO, note…" />
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: 14 }}>
+        <Stat icon="🧾" label="Gross Ledger" value={fmtN(totalGross)} sub={`${filteredRows.length} invoices`} color="var(--accent)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="💳" label="Collected" value={fmtN(totalReceived)} sub={`${collectionRate.toFixed(1)}% collection`} color="var(--green)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="⏳" label="Outstanding" value={fmtN(totalBalance)} sub={`${filteredRows.filter(row => row.balance > 0).length} open`} color="var(--orange)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="🚨" label="Overdue" value={fmtN(overdueBalance)} sub={`${overdueCount} overdue`} color="var(--red)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="✅" label="Paid Value" value={fmtN(paidValue)} sub={`${filteredRows.filter(row => row.status === "paid").length} settled`} color="var(--blue)" valueSize="clamp(16px, 1.7vw, 22px)" />
+        <Stat icon="⚠️" label="Disputes" value={String(disputedCount)} sub="Need escalation" color="var(--purple)" valueSize="clamp(16px, 1.7vw, 22px)" />
+      </div>
+
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+          <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Aging Summary</h2>
+          <Btn variant="ghost" size="sm" onClick={() => exportView("Receivable Aging Summary", ["Bucket", "Count", "Outstanding Balance"], agingSummary.map(row => [row.label, row.count, row.balance]))}>Export Aging</Btn>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 12 }}>
+          {agingSummary.map(bucket => (
+            <div key={bucket.bucket} style={{ padding: 14, borderRadius: 12, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em" }}>{bucket.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, marginTop: 8 }}>{fmtN(bucket.balance)}</div>
+              <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 6 }}>{bucket.count} invoice{bucket.count === 1 ? "" : "s"}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr .9fr", gap: 18, alignItems: "start" }}>
+        <Card>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Receivables Ledger</h2>
+            <Btn variant="ghost" size="sm" onClick={() => exportView("Collections Watchlist", ["Invoice No.", "Client", "Status", "Stage", "Due Date", "Days Past Due", "Outstanding", "Owner", "Last Follow-up"], filteredRows.filter(row => row.balance > 0).map(row => [row.invoiceNo, row.clientName, getStatusLabel(row.status), getStageLabel(row.collectionStage), row.dueDate, row.daysPastDue, row.balance, row.owner, row.lastFollowUpAt]))}>Export Watchlist</Btn>
+          </div>
+          {filteredRows.length === 0 ? <Empty icon="💵" title="No receivable records yet" sub="Create a manual invoice or promote reconciled closeout items into the ledger." /> : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1240 }}>
+                <thead>
+                  <tr style={{ background: "var(--bg3)" }}>
+                    {["Invoice / Client", "Campaign / MPO", "Amounts", "Status", "Aging", "Payments", "Actions"].map(header => <th key={header} style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>{header}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRows.map((row, index) => (
+                    <tr key={row.id} style={{ borderBottom: "1px solid var(--border)", background: index % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
+                      <td style={{ padding: "9px 10px", fontSize: 12, fontWeight: 700 }}>
+                        {row.invoiceNo}
+                        <div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 400, marginTop: 3 }}>{row.clientName}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>Invoice {formatIsoDate(row.invoiceDate)} · Due {formatIsoDate(row.dueDate)}</div>
+                      </td>
+                      <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                        <div style={{ fontWeight: 700 }}>{row.campaignName}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.brand}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.mpoNo !== "—" ? row.mpoNo : "Manual record"}</div>
+                      </td>
+                      <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                        <div style={{ fontWeight: 700 }}>{fmtN(row.grossAmount)}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>Received {fmtN(row.amountReceived)}</div>
+                        <div style={{ fontSize: 11, color: row.balance > 0 ? "var(--orange)" : "var(--green)", marginTop: 3 }}>Outstanding {fmtN(row.balance)}</div>
+                      </td>
+                      <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <Badge color={getStatusColor(row.status)}>{getStatusLabel(row.status)}</Badge>
+                          <Badge color={row.collectionStage === "resolved" ? "green" : row.collectionStage === "escalated" ? "red" : row.collectionStage === "promise_to_pay" ? "blue" : "accent"}>{getStageLabel(row.collectionStage)}</Badge>
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 5 }}>Owner: {row.owner || "—"}</div>
+                      </td>
+                      <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                        <div style={{ fontWeight: 700, color: row.daysPastDue > 0 ? "var(--red)" : "var(--green)" }}>{row.daysPastDue > 0 ? `${row.daysPastDue} days late` : getAgingLabel(row.agingBucket)}</div>
+                        <div style={{ marginTop: 6, height: 6, background: "var(--bg4)", borderRadius: 999, overflow: "hidden" }}><div style={{ width: `${Math.min(row.collectionProgress, 100)}%`, height: "100%", background: row.balance <= 0 ? "var(--green)" : row.daysPastDue > 0 ? "var(--red)" : "var(--blue)" }} /></div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 5 }}>{row.collectionProgress.toFixed(1)}% collected</div>
+                      </td>
+                      <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                        <div style={{ fontWeight: 700 }}>{row.paymentCount} payment{row.paymentCount === 1 ? "" : "s"}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{row.latestPayment ? `${formatIsoDate(row.latestPayment.receivedAt)} · ${fmtN(row.latestPayment.amount)}` : "No payment logged"}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>Follow-up {formatIsoDate(row.lastFollowUpAt)}</div>
+                      </td>
+                      <td style={{ padding: "9px 10px", fontSize: 12 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <Btn variant="ghost" size="sm" onClick={() => openEditForm(row)}>Edit</Btn>
+                            <Btn variant="secondary" size="sm" onClick={() => openPaymentEntry(row)}>Log Payment</Btn>
+                            <Btn variant="ghost" size="sm" onClick={() => exportStatement(row)}>Statement</Btn>
+                          </div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {row.status !== "paid" ? <Btn variant="success" size="sm" onClick={() => updateQuickStatus(row, "paid")}>Mark Paid</Btn> : null}
+                            {row.status !== "disputed" ? <Btn variant="purple" size="sm" onClick={() => updateQuickStatus(row, "disputed")}>Dispute</Btn> : null}
+                            <Btn variant="danger" size="sm" onClick={() => removeReceivable(row.id)}>Delete</Btn>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Ready to Raise Invoice</h2>
+              <Btn variant="ghost" size="sm" onClick={() => onOpenCloseout && onOpenCloseout()}>Review Closeout</Btn>
+            </div>
+            {billingCandidates.length === 0 ? <Empty icon="📦" title="No billing candidates" sub="Completed reconciliation items without a ledger record will surface here." /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {billingCandidates.slice(0, 6).map(candidate => (
+                  <div key={candidate.id} style={{ padding: "11px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{candidate.clientName}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{candidate.mpoNo} · {candidate.campaignName}</div>
+                      </div>
+                      <Badge color="green">Ready</Badge>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginTop: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: "var(--text3)" }}>Billing value</div>
+                        <div style={{ fontSize: 14, fontWeight: 800, marginTop: 3 }}>{fmtN(candidate.amount)}</div>
+                      </div>
+                      <Btn variant="secondary" size="sm" onClick={() => openCandidateForm(candidate)}>Create AR</Btn>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Overdue Focus</h2>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Overdue Receivables", ["Invoice No.", "Client", "Campaign", "Due Date", "Days Past Due", "Outstanding", "Owner", "Collection Stage"], filteredRows.filter(row => row.daysPastDue > 0 && row.balance > 0).map(row => [row.invoiceNo, row.clientName, row.campaignName, row.dueDate, row.daysPastDue, row.balance, row.owner, getStageLabel(row.collectionStage)]))}>Export Overdue</Btn>
+            </div>
+            {filteredRows.filter(row => row.daysPastDue > 0 && row.balance > 0).length === 0 ? <Empty icon="🕒" title="No overdue invoices" sub="Current unpaid items will roll in here once they pass due date." /> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {filteredRows.filter(row => row.daysPastDue > 0 && row.balance > 0).slice(0, 6).map(row => (
+                  <div key={row.id} style={{ padding: "11px 12px", borderRadius: 10, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{row.invoiceNo}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{row.clientName} · {row.campaignName}</div>
+                      </div>
+                      <Badge color="red">{row.daysPastDue}d late</Badge>
+                    </div>
+                    <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8 }}>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Outstanding</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{fmtN(row.balance)}</div></div>
+                      <div style={{ background: "var(--bg2)", borderRadius: 8, padding: "8px 10px" }}><div style={{ fontSize: 10, color: "var(--text3)", textTransform: "uppercase" }}>Owner / Stage</div><div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{row.owner || "—"} · {getStageLabel(row.collectionStage)}</div></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+
+      {formModal && (
+        <Modal title={receivables.some(item => item.id === formModal.id) ? "Edit Receivable" : "New Receivable"} onClose={() => setFormModal(null)} width={720}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 12 }}>
+              <Field label="Source MPO" value={formModal.mpoId || ""} onChange={handleFormMpoChange} options={liveMpos.map(mpo => ({ value: mpo.id, label: `${mpo.mpoNo || "MPO"} · ${mpo.clientName || mpo.campaignName || mpo.vendorName || "—"}` }))} placeholder="Optional" />
+              <Field label="Client" value={formModal.clientId} onChange={value => setFormModal(prev => ({ ...prev, clientId: value }))} options={liveClients.map(client => ({ value: client.id, label: client.name }))} placeholder="Select Client" />
+              <Field label="Campaign" value={formModal.campaignId} onChange={value => setFormModal(prev => ({ ...prev, campaignId: value }))} options={liveCampaigns.filter(campaign => !formModal.clientId || campaign.clientId === formModal.clientId).map(campaign => ({ value: campaign.id, label: campaign.name }))} placeholder="Optional" />
+              <Field label="Invoice No." value={formModal.invoiceNo} onChange={value => setFormModal(prev => ({ ...prev, invoiceNo: value }))} placeholder="e.g. INV-2026-014" />
+              <Field label="Invoice Date" type="date" value={formModal.invoiceDate} onChange={value => setFormModal(prev => ({ ...prev, invoiceDate: value, dueDate: prev.dueDate || addDaysToIso(value, 30) }))} />
+              <Field label="Due Date" type="date" value={formModal.dueDate} onChange={value => setFormModal(prev => ({ ...prev, dueDate: value }))} />
+              <Field label="Gross Amount" type="number" value={formModal.grossAmount} onChange={value => setFormModal(prev => ({ ...prev, grossAmount: value }))} />
+              <Field label="Status" value={formModal.status} onChange={value => setFormModal(prev => ({ ...prev, status: value }))} options={statusOptions} />
+              <Field label="Collection Stage" value={formModal.collectionStage} onChange={value => setFormModal(prev => ({ ...prev, collectionStage: value }))} options={stageOptions} />
+              <Field label="Owner" value={formModal.owner} onChange={value => setFormModal(prev => ({ ...prev, owner: value }))} placeholder="Collection owner" />
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Field label="Notes" value={formModal.notes} onChange={value => setFormModal(prev => ({ ...prev, notes: value }))} rows={4} placeholder="Add invoice or collection notes…" />
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Btn variant="ghost" onClick={() => setFormModal(null)}>Cancel</Btn>
+              <Btn onClick={saveReceivable} loading={formBusy}>Save Receivable</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {paymentModal && (
+        <Modal title="Log Payment" onClose={() => setPaymentModal(null)} width={560}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 12 }}>
+              <Field label="Amount Received" type="number" value={paymentModal.amount} onChange={value => setPaymentModal(prev => ({ ...prev, amount: value }))} />
+              <Field label="Payment Date" type="date" value={paymentModal.receivedAt} onChange={value => setPaymentModal(prev => ({ ...prev, receivedAt: value }))} />
+              <Field label="Reference" value={paymentModal.reference} onChange={value => setPaymentModal(prev => ({ ...prev, reference: value }))} placeholder="Transfer ref / receipt no." />
+              <Field label="Channel" value={paymentModal.channel} onChange={value => setPaymentModal(prev => ({ ...prev, channel: value }))} options={paymentChannelOptions} />
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Field label="Note" value={paymentModal.note} onChange={value => setPaymentModal(prev => ({ ...prev, note: value }))} rows={3} placeholder="Optional note for the payment entry" />
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Btn variant="ghost" onClick={() => setPaymentModal(null)}>Cancel</Btn>
+              <Btn onClick={savePayment} loading={paymentBusy}>Save Payment</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {preview && <PrintPreview html={preview.html} csv={preview.csv} pdfBytes={preview.pdfBytes} title={preview.title} onClose={() => setPreview(null)} />}
+      {toast && <Toast {...toast} onDone={() => setToast(null)} />}
+    </div>
+  );
+};
+
+
+const FinancePage = ({ user, vendors, clients, campaigns, mpos, receivables, receivablesMeta, onSaveReceivable, onRemoveReceivable, onLogReceivablePayment, onUpdateReceivableStatus }) => {
+  const [tab, setTab] = useState("budgeting");
+
+  const tabs = [
+    { id: "budgeting", icon: "🧮", label: "Budgeting", sub: "Budget control, invoice and payment status" },
+    { id: "closeout", icon: "🧾", label: "Closeout", sub: "Reconciliation, proof, make-goods and billing readiness" },
+    { id: "receivables", icon: "💵", label: "Receivables", sub: "Client invoicing, collections and cash recovery" },
+  ];
+
+  const activeTab = tabs.find(item => item.id === tab) || tabs[0];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
+      <Card style={{ padding: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0, flex: "1 1 320px" }}>
+            <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24, margin: 0 }}>Finance</h1>
+            <p style={{ marginTop: 6, marginBottom: 0, color: "var(--text3)", lineHeight: 1.6, fontSize: 13, maxWidth: 860 }}>Manage budget control, vendor settlement, reconciliation closeout, and client collections in one finance workspace.</p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+            <Badge color="accent">{activeTab.label}</Badge>
+            <span style={{ fontSize: 11, color: "var(--text3)", maxWidth: 360, lineHeight: 1.45 }}>{activeTab.sub}</span>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginTop: 16 }}>
+          {tabs.map(item => {
+            const active = item.id === tab;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setTab(item.id)}
+                style={{
+                  border: active ? "1px solid rgba(240,165,0,.38)" : "1px solid var(--border)",
+                  background: active ? "rgba(240,165,0,.12)" : "var(--bg3)",
+                  color: active ? "var(--accent)" : "var(--text2)",
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  minWidth: 0,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, minWidth: 0 }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{item.icon}</span>
+                  <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, minWidth: 0, overflowWrap: "anywhere" }}>{item.label}</span>
+                </div>
+                <div style={{ fontSize: 11, lineHeight: 1.45, color: active ? "var(--text)" : "var(--text3)", overflowWrap: "anywhere" }}>{item.sub}</div>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {tab === "budgeting" && <BudgetingPage vendors={vendors} clients={clients} campaigns={campaigns} mpos={mpos} />}
+      {tab === "closeout" && <CloseoutPage vendors={vendors} clients={clients} campaigns={campaigns} mpos={mpos} onOpenReceivables={() => setTab("receivables")} />}
+      {tab === "receivables" && <ReceivablesPage user={user} clients={clients} campaigns={campaigns} mpos={mpos} receivables={receivables} receivablesMeta={receivablesMeta} onSaveReceivable={onSaveReceivable} onRemoveReceivable={onRemoveReceivable} onLogReceivablePayment={onLogReceivablePayment} onUpdateReceivableStatus={onUpdateReceivableStatus} onOpenCloseout={() => setTab("closeout")} />}
+    </div>
+  );
+};
+
 /* ── MAIN APP ───────────────────────────────────────────── */
 export default function App() {
+
   const [user, setUser] = useState(null);
   const [authUser, setAuthUser] = useState(null);
   const [page, setPage] = useState("dashboard");
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useState(() => getDefaultTheme());
   const [appSettings, _setAppSettings] = useState(() => getAppSettings());
+  useEffect(() => {
+    setTheme(getDefaultTheme(user?.id || null));
+  }, [user?.id]);
+
   const setAppSettings = useCallback((value) => {
     _setAppSettings(prev => {
       const next = typeof value === "function" ? value(prev) : value;
@@ -5949,11 +8715,7 @@ export default function App() {
   }, [user?.agencyId]);
   const toggleTheme = () => setTheme(t => {
     const n = t === "light" ? "dark" : "light";
-    store.set("msp_theme", n);
-    if (user?.agencyId) {
-      const nextSettings = { ...appSettings, themePreference: n };
-      saveAppSettingsToSupabase(user.agencyId, nextSettings).catch(error => console.error("Failed to persist theme:", error));
-    }
+    store.set(themeKeyForUser(user?.id || null), n);
     return n;
   });
 
@@ -5962,8 +8724,11 @@ export default function App() {
   const [campaigns, setCampaigns] = useState([]);
   const [rates, setRates] = useState([]);
   const [mpos, setMpos] = useState([]);
+  const [receivables, setReceivables] = useState([]);
+  const [receivablesSync, setReceivablesSync] = useState(() => getReceivablesSyncMeta("local"));
   const [members, setMembers] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [alertsOpen, setAlertsOpen] = useState(false);
 
 // MPOs now come from Supabase
 
@@ -6052,10 +8817,6 @@ export default function App() {
         if (!active) return;
         _setAppSettings(settings);
         store.set("msp_app_settings", settings);
-        if (settings?.themePreference === "light" || settings?.themePreference === "dark") {
-          setTheme(settings.themePreference);
-          store.set("msp_theme", settings.themePreference);
-        }
       } catch (e) {
         console.error("Failed to load app settings:", e);
       }
@@ -6206,6 +8967,37 @@ export default function App() {
   }, [user?.agencyId]);
 
   useEffect(() => {
+    if (!user?.agencyId) {
+      setReceivables([]);
+      setReceivablesSync(getReceivablesSyncMeta("local"));
+      return;
+    }
+
+    let active = true;
+    const loadReceivables = async () => {
+      try {
+        const rows = await fetchReceivablesFromSupabase();
+        if (!active) return;
+        setReceivables(rows);
+        setReceivablesSync(getReceivablesSyncMeta("supabase"));
+      } catch (error) {
+        console.error("Failed to load receivables from Supabase:", error);
+        if (!active) return;
+        setReceivables(getStoredReceivables(user.agencyId));
+        setReceivablesSync(getReceivablesSyncMeta("local", error));
+      }
+    };
+
+    loadReceivables();
+    return () => { active = false; };
+  }, [user?.agencyId]);
+
+  useEffect(() => {
+    if (!user?.agencyId) return;
+    setStoredReceivables(user.agencyId, receivables);
+  }, [user?.agencyId, receivables]);
+
+  useEffect(() => {
     if (!user?.agencyId) return;
 
     const refreshUser = async () => {
@@ -6235,6 +9027,16 @@ export default function App() {
     const refreshMembers = async () => {
       try { setMembers(await fetchAgencyMembersFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime members refresh failed:", error); }
     };
+    const refreshReceivables = async () => {
+      try {
+        const rows = await fetchReceivablesFromSupabase();
+        setReceivables(rows);
+        setReceivablesSync(getReceivablesSyncMeta("supabase"));
+      } catch (error) {
+        console.error("Realtime receivables refresh failed:", error);
+        setReceivablesSync(getReceivablesSyncMeta("local", error));
+      }
+    };
     const refreshNotifications = async () => {
       try { setNotifications(await fetchNotificationsFromSupabase(user.id, user.agencyId)); } catch (error) { console.error("Realtime notifications refresh failed:", error); }
     };
@@ -6242,16 +9044,12 @@ export default function App() {
       try {
         const settings = await fetchAppSettingsFromSupabase(user.agencyId);
         _setAppSettings(settings);
-        if (settings?.themePreference === "light" || settings?.themePreference === "dark") {
-          setTheme(settings.themePreference);
-          store.set("msp_theme", settings.themePreference);
-        }
       } catch (error) {
         console.error("Realtime settings refresh failed:", error);
       }
     };
 
-    const channel = supabase
+    let channel = supabase
       .channel(`agency-live-${user.agencyId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "vendors", filter: `agency_id=eq.${user.agencyId}` }, refreshVendors)
       .on("postgres_changes", { event: "*", schema: "public", table: "clients", filter: `agency_id=eq.${user.agencyId}` }, refreshClients)
@@ -6262,15 +9060,31 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "app_settings", filter: `agency_id=eq.${user.agencyId}` }, refreshSettings)
       .on("postgres_changes", { event: "*", schema: "public", table: "agencies", filter: `id=eq.${user.agencyId}` }, async () => { await refreshUser(); await refreshSettings(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `agency_id=eq.${user.agencyId}` }, async () => { await refreshUser(); await refreshMembers(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `recipient_user_id=eq.${user.id}` }, refreshNotifications)
-      .subscribe();
+      .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `recipient_user_id=eq.${user.id}` }, refreshNotifications);
+
+    if (receivablesSync.mode === "supabase") {
+      channel = channel
+        .on("postgres_changes", { event: "*", schema: "public", table: "receivables", filter: `agency_id=eq.${user.agencyId}` }, refreshReceivables)
+        .on("postgres_changes", { event: "*", schema: "public", table: "receivable_payments", filter: `agency_id=eq.${user.agencyId}` }, refreshReceivables);
+    }
+
+    channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel).catch(() => {});
     };
-  }, [user?.agencyId, user?.id, authUser?.id]);
+  }, [user?.agencyId, user?.id, authUser?.id, receivablesSync.mode]);
 
   const unreadNotifications = notifications.filter(notification => !notification.readAt).length;
+
+  const workspaceAlerts = (notifications || []).slice(0, 12).map(notification => ({
+    id: notification.id,
+    icon: notification.category === "finance" ? "💳" : notification.category === "reconciliation" ? "📑" : notification.category === "proof" ? "📎" : "🔔",
+    title: notification.title || "Notification",
+    message: notification.message || "Open settings to view this alert.",
+    page: notification.linkPage || "settings",
+    isUnread: !notification.readAt,
+  }));
 
   const handleMarkNotificationRead = async (notificationId) => {
     try {
@@ -6292,6 +9106,120 @@ export default function App() {
     }
   };
 
+  const switchReceivablesToLocalFallback = useCallback((error) => {
+    setReceivablesSync(getReceivablesSyncMeta("local", error));
+  }, []);
+
+  const upsertLocalReceivable = useCallback((record) => {
+    const normalized = normalizeReceivableRecord(record);
+    setReceivables(items => [normalized, ...items.filter(item => item.id !== normalized.id)].map(normalizeReceivableRecord));
+    return normalized;
+  }, []);
+
+  const removeLocalReceivable = useCallback((receivableId) => {
+    setReceivables(items => items.filter(item => item.id !== receivableId));
+    return true;
+  }, []);
+
+  const logLocalReceivablePayment = useCallback((receivableId, paymentInput) => {
+    let updated = null;
+    setReceivables(items => items.map(item => {
+      if (item.id !== receivableId) return item;
+      const normalized = normalizeReceivableRecord(item);
+      const payment = normalizePaymentEntry(paymentInput);
+      updated = normalizeReceivableRecord({
+        ...normalized,
+        status: normalized.status === "draft" ? "issued" : normalized.status,
+        payments: [payment, ...(normalized.payments || [])],
+        lastPaymentAt: payment.receivedAt,
+        lastFollowUpAt: payment.receivedAt,
+        updatedAt: new Date().toISOString(),
+      });
+      return updated;
+    }).map(normalizeReceivableRecord));
+    return updated;
+  }, []);
+
+  const updateLocalReceivableStatus = useCallback((receivableId, updates = {}) => {
+    let updated = null;
+    setReceivables(items => items.map(item => {
+      if (item.id !== receivableId) return item;
+      updated = normalizeReceivableRecord({
+        ...item,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      });
+      return updated;
+    }).map(normalizeReceivableRecord));
+    return updated;
+  }, []);
+
+  const handleSaveReceivableRecord = useCallback(async (record) => {
+    const normalized = normalizeReceivableRecord(record);
+    const shouldUseSupabase = !!user?.agencyId && !!user?.id && receivablesSync.mode === "supabase";
+    if (!shouldUseSupabase) return upsertLocalReceivable(normalized);
+
+    try {
+      const existsInState = receivables.some(item => item.id === normalized.id);
+      const saved = existsInState && looksLikeUuid(normalized.id)
+        ? await updateReceivableInSupabase(normalized.id, normalized)
+        : await insertReceivableInSupabase(user.agencyId, user.id, normalized);
+      setReceivables(items => [saved, ...items.filter(item => item.id !== saved.id)].map(normalizeReceivableRecord));
+      return saved;
+    } catch (error) {
+      console.error("Failed to save receivable in Supabase:", error);
+      switchReceivablesToLocalFallback(error);
+      return upsertLocalReceivable(normalized);
+    }
+  }, [user?.agencyId, user?.id, receivablesSync.mode, receivables, switchReceivablesToLocalFallback, upsertLocalReceivable]);
+
+  const handleRemoveReceivableRecord = useCallback(async (receivableId) => {
+    const shouldUseSupabase = !!user?.agencyId && receivablesSync.mode === "supabase" && looksLikeUuid(receivableId);
+    if (!shouldUseSupabase) return removeLocalReceivable(receivableId);
+
+    try {
+      await deleteReceivableInSupabase(receivableId);
+      setReceivables(items => items.filter(item => item.id !== receivableId));
+      return true;
+    } catch (error) {
+      console.error("Failed to remove receivable from Supabase:", error);
+      switchReceivablesToLocalFallback(error);
+      return removeLocalReceivable(receivableId);
+    }
+  }, [user?.agencyId, receivablesSync.mode, removeLocalReceivable, switchReceivablesToLocalFallback]);
+
+  const handleLogReceivablePayment = useCallback(async (receivableId, paymentInput) => {
+    const current = receivables.find(item => item.id === receivableId);
+    if (!current) throw new Error("Receivable not found.");
+    const shouldUseSupabase = !!user?.agencyId && !!user?.id && receivablesSync.mode === "supabase" && looksLikeUuid(receivableId);
+    if (!shouldUseSupabase) return logLocalReceivablePayment(receivableId, paymentInput);
+
+    try {
+      const saved = await insertReceivablePaymentInSupabase(user.agencyId, user.id, receivableId, paymentInput, current);
+      if (saved) setReceivables(items => items.map(item => item.id === saved.id ? saved : item).map(normalizeReceivableRecord));
+      return saved;
+    } catch (error) {
+      console.error("Failed to save receivable payment in Supabase:", error);
+      switchReceivablesToLocalFallback(error);
+      return logLocalReceivablePayment(receivableId, paymentInput);
+    }
+  }, [user?.agencyId, user?.id, receivablesSync.mode, receivables, logLocalReceivablePayment, switchReceivablesToLocalFallback]);
+
+  const handleUpdateReceivableStatus = useCallback(async (receivableId, updates = {}) => {
+    const shouldUseSupabase = !!user?.agencyId && receivablesSync.mode === "supabase" && looksLikeUuid(receivableId);
+    if (!shouldUseSupabase) return updateLocalReceivableStatus(receivableId, updates);
+
+    try {
+      const saved = await updateReceivableStatusInSupabase(receivableId, updates);
+      setReceivables(items => items.map(item => item.id === receivableId ? saved : item).map(normalizeReceivableRecord));
+      return saved;
+    } catch (error) {
+      console.error("Failed to update receivable status in Supabase:", error);
+      switchReceivablesToLocalFallback(error);
+      return updateLocalReceivableStatus(receivableId, updates);
+    }
+  }, [user?.agencyId, receivablesSync.mode, switchReceivablesToLocalFallback, updateLocalReceivableStatus]);
+
   const handleLogin = () => {};
 
   const handleLogout = async () => {
@@ -6303,6 +9231,8 @@ export default function App() {
     setCampaigns([]);
     setRates([]);
     setMpos([]);
+    setReceivables([]);
+    setReceivablesSync(getReceivablesSyncMeta("local"));
     setMembers([]);
     _setAppSettings(getAppSettings());
     try {
@@ -6345,22 +9275,47 @@ if (!user) {
   );
 }
 
-  const pp = { vendors, clients, campaigns, rates, mpos, notifications, unreadNotifications, setVendors, setClients, setCampaigns, setRates, setMpos };
+  const pp = { vendors, clients, campaigns, rates, mpos, receivables, notifications, unreadNotifications, setVendors, setClients, setCampaigns, setRates, setMpos, setReceivables };
 
   return (
     <>
       <GlobalStyle theme={theme} />
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <Sidebar page={page} setPage={setPage} user={user} onLogout={handleLogout} collapsed={collapsed} setCollapsed={setCollapsed} theme={theme} toggleTheme={toggleTheme} unreadNotifications={unreadNotifications} />
-        <main style={{ flex: 1, overflowY: "auto", padding: "28px 28px 52px" }}>
+        <main style={{ flex: 1, overflowY: "auto", padding: "28px 28px 52px", position: "relative" }}>
+          <TopRightNotificationsButton count={unreadNotifications} onClick={() => setAlertsOpen(true)} />
+          {alertsOpen && (
+            <Modal title="Workspace Alerts" onClose={() => setAlertsOpen(false)} width={560}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {workspaceAlerts.length === 0 ? (
+                  <Empty icon="🔔" title="No alerts right now" sub="Your workspace looks clear." />
+                ) : workspaceAlerts.map(alert => (
+                  <Card key={alert.id} style={{ padding: 16 }}>
+                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--bg3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{alert.icon}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>{alert.title}</div>
+                        <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 4 }}>{alert.message}</div>
+                      </div>
+                      {alert.isUnread ? <Badge color="accent">New</Badge> : null}
+                    </div>
+                  </Card>
+                ))}
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <Btn variant="ghost" onClick={() => { setAlertsOpen(false); setPage("settings"); }}>Open Inbox</Btn>
+                </div>
+              </div>
+            </Modal>
+          )}
           {page === "dashboard"  && <Dashboard user={user} {...pp} setPage={setPage} onOpenNotifications={() => setPage("settings")} />}
           {page === "vendors"    && <VendorsPage {...pp} user={user} />}
           {page === "clients"    && <ClientsPage {...pp} user={user} />}
           {page === "campaigns"  && <CampaignsPage {...pp} user={user} />}
           {page === "rates"      && <RatesPage {...pp} user={user} />}
+          {page === "finance"    && <FinancePage user={user} vendors={vendors} clients={clients} campaigns={campaigns} mpos={mpos} receivables={receivables} receivablesMeta={receivablesSync} onSaveReceivable={handleSaveReceivableRecord} onRemoveReceivable={handleRemoveReceivableRecord} onLogReceivablePayment={handleLogReceivablePayment} onUpdateReceivableStatus={handleUpdateReceivableStatus} />}
           {page === "mpo"        && <MPOPage {...pp} user={user} appSettings={appSettings} />}
           {page === "reports"    && <ReportsPage {...pp} />}
-          {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} members={members} setMembers={setMembers} notifications={notifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} />}
+          {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} />}
         </main>
       </div>
     </>
