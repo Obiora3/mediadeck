@@ -10,6 +10,26 @@ const store = {
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const fmt = (n, d = 0) => (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtN = (n) => `₦${fmt(n)}`;
+const buildProgrammeCostLines = (spots = []) => {
+  const grouped = new Map();
+  (spots || []).forEach(spot => {
+    const programme = String(spot?.programme || '').trim() || 'Untitled Programme';
+    const duration = String(spot?.duration || '').trim() || '';
+    const rate = parseFloat(spot?.ratePerSpot) || 0;
+    const cnt = Array.isArray(spot?.ad) && spot.ad.length
+      ? spot.ad.length
+      : Array.isArray(spot?.calendarDays) && spot.calendarDays.length
+        ? spot.calendarDays.length
+        : (parseFloat(spot?.spots) || 0);
+    const key = programme.toLowerCase();
+    if (!grouped.has(key)) grouped.set(key, { programme, duration, cnt: 0, rate });
+    const entry = grouped.get(key);
+    entry.cnt += cnt;
+    if (!entry.rate && rate) entry.rate = rate;
+    if (!entry.duration && duration) entry.duration = duration;
+  });
+  return Array.from(grouped.values()).map(line => ({ ...line, gross: line.cnt * line.rate }));
+};
 const normalizeAgencyName = (value = "") => value.trim().replace(/\s+/g, " ").toLowerCase();
 const normalizeAgencyCode = (value = "") => value.trim().toUpperCase().replace(/\s+/g, "");
 
@@ -1979,6 +1999,12 @@ const changePasswordInSupabase = async (newPassword) => {
   if (error) throw error;
 };
 
+const requestPasswordResetInSupabase = async (email) => {
+  const redirectTo = `${window.location.origin}${window.location.pathname}?reset_password=1`;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw error;
+};
+
 const generateNextMpoNoFromSupabase = async (brand = "MPO") => {
   const { data, error } = await supabase.rpc("generate_next_mpo_no", { p_brand: brand || "MPO" });
   if (error) {
@@ -2161,15 +2187,84 @@ const Btn = ({ children, variant = "primary", size = "md", onClick, type = "butt
   );
 };
 
+const normalizeFieldOptions = (options = []) => (options || []).map(o => typeof o === "object" ? { value: o.value ?? o.label ?? "", label: o.label ?? o.value ?? "" } : { value: o, label: o });
+
+const SearchableSelect = ({ value, onChange, options = [], placeholder, error }) => {
+  const normalized = normalizeFieldOptions(options);
+  const selected = normalized.find(o => String(o.value) === String(value));
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(selected?.label || "");
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    setQuery(selected?.label || "");
+  }, [selected?.label, value]);
+
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
+
+  const filtered = normalized.filter(o => o.label.toLowerCase().includes(query.toLowerCase().trim()));
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <input
+        value={query}
+        placeholder={placeholder || "Search or select..."}
+        onFocus={() => setOpen(true)}
+        onChange={e => {
+          setQuery(e.target.value);
+          setOpen(true);
+          if (!e.target.value) onChange("");
+        }}
+        style={{ background: "var(--bg3)", border: `1px solid ${error ? "var(--red)" : open ? "var(--accent)" : "var(--border2)"}`, borderRadius: 8, padding: "9px 36px 9px 13px", color: query ? "var(--text)" : "var(--text3)", fontSize: 13, outline: "none", width: "100%" }}
+      />
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", color: "var(--text3)", cursor: "pointer", fontSize: 12 }}
+      >
+        ▾
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, maxHeight: 220, overflowY: "auto", background: "var(--bg2)", border: `1px solid ${error ? "var(--red)" : "var(--border2)"}`, borderRadius: 10, boxShadow: "0 10px 28px rgba(0,0,0,.16)", zIndex: 40, padding: 6 }}>
+          {!!value && (
+            <button
+              type="button"
+              onClick={() => { onChange(""); setQuery(""); setOpen(false); }}
+              style={{ width: "100%", textAlign: "left", border: "none", background: "transparent", color: "var(--text3)", padding: "8px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12 }}
+            >
+              Clear selection
+            </button>
+          )}
+          {(filtered.length ? filtered : normalized.slice(0, 20)).map(o => (
+            <button
+              key={`${o.value}__${o.label}`}
+              type="button"
+              onClick={() => { onChange(o.value); setQuery(o.label); setOpen(false); }}
+              style={{ width: "100%", textAlign: "left", border: "none", background: String(o.value) === String(value) ? "rgba(240,165,0,.12)" : "transparent", color: String(o.value) === String(value) ? "var(--accent)" : "var(--text)", padding: "9px 10px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}
+            >
+              {o.label}
+            </button>
+          ))}
+          {!filtered.length && (
+            <div style={{ padding: "9px 10px", color: "var(--text3)", fontSize: 12 }}>No matches found</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Field = ({ label, value, onChange, type = "text", placeholder, required, options, note, error, rows }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
     {label && <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em" }}>{label}{required && <span style={{ color: "var(--accent)", marginLeft: 3 }}>*</span>}</label>}
     {options ? (
-      <select value={value} onChange={e => onChange(e.target.value)}
-        style={{ background: "var(--bg3)", border: `1px solid ${error ? "var(--red)" : "var(--border2)"}`, borderRadius: 8, padding: "9px 13px", color: value ? "var(--text)" : "var(--text3)", fontSize: 13, outline: "none", cursor: "pointer" }}>
-        <option value="">{placeholder || "Select…"}</option>
-        {options.map(o => <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>)}
-      </select>
+      <SearchableSelect value={value} onChange={onChange} options={options} placeholder={placeholder || "Select..."} error={error} />
     ) : rows ? (
       <textarea value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} rows={rows}
         style={{ background: "var(--bg3)", border: `1px solid ${error ? "var(--red)" : "var(--border2)"}`, borderRadius: 8, padding: "9px 13px", color: "var(--text)", fontSize: 13, outline: "none", lineHeight: 1.5 }}
@@ -2301,8 +2396,8 @@ const Confirm = ({ msg, onYes, onNo, danger = true }) => (
 );
 
 /* ── AUTH ───────────────────────────────────────────────── */
-const AuthPage = ({ onLogin }) => {
-  const [mode, setMode] = useState("login");
+const AuthPage = ({ onLogin, resetMode = false, onResetHandled = null }) => {
+  const [mode, setMode] = useState(resetMode ? "reset" : "login");
   const [f, setF] = useState({
     name: "",
     email: "",
@@ -2318,8 +2413,13 @@ const AuthPage = ({ onLogin }) => {
   const [loading, setLoading] = useState(false);
   const [existingAgencyMatch, setExistingAgencyMatch] = useState(null);
   const [agencyCheckLoading, setAgencyCheckLoading] = useState(false);
+  const [resetEmailSent, setResetEmailSent] = useState(false);
 
   const u = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    setMode(resetMode ? "reset" : "login");
+  }, [resetMode]);
 
   useEffect(() => {
     let active = true;
@@ -2375,6 +2475,12 @@ const AuthPage = ({ onLogin }) => {
       }
     }
 
+    if (mode === "reset") {
+      if (!f.password || !f.confirm) return setErr("Enter and confirm your new password.");
+      if (f.password !== f.confirm) return setErr("Passwords do not match.");
+      if (f.password.length < 6) return setErr("Password must be at least 6 characters.");
+    }
+
     setLoading(true);
 
     try {
@@ -2385,8 +2491,7 @@ const AuthPage = ({ onLogin }) => {
         });
 
         if (error) throw error;
-        // App-level auth listener will load the user and agency.
-      } else {
+      } else if (mode === "register") {
         const { data, error } = await supabase.auth.signUp({
           email: f.email,
           password: f.password,
@@ -2425,7 +2530,11 @@ const AuthPage = ({ onLogin }) => {
           );
           setMode("login");
         }
-        // If a session exists immediately, App-level auth listener will complete agency join/load.
+      } else {
+        await changePasswordInSupabase(f.password);
+        setErr("");
+        setF((prev) => ({ ...prev, password: "", confirm: "" }));
+        if (onResetHandled) onResetHandled();
       }
     } catch (e) {
       setErr(e.message || "Something went wrong.");
@@ -2434,30 +2543,71 @@ const AuthPage = ({ onLogin }) => {
     }
   };
 
+  const sendResetLink = async () => {
+    setErr("");
+    setResetEmailSent(false);
+    if (!f.email) return setErr("Enter your email address first.");
+    setLoading(true);
+    try {
+      await requestPasswordResetInSupabase(f.email);
+      setResetEmailSent(true);
+    } catch (e) {
+      setErr(e.message || "Could not send reset link.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const authVars = {
+    "--bg": "#eef3f9",
+    "--bg2": "#ffffff",
+    "--bg3": "#f6f8fc",
+    "--bg4": "#e9eef6",
+    "--text": "#172033",
+    "--text2": "#52607a",
+    "--text3": "#7b879c",
+    "--border": "#dce4f0",
+    "--border2": "#d4ddeb",
+    "--accent": "#f0a500",
+    "--green": "#16a34a",
+    "--red": "#dc2626",
+    "--orange": "#f97316",
+    "--blue": "#2563eb",
+  };
+
+  const title = mode === "login" ? "Welcome back" : mode === "reset" ? "Set a new password" : "Create account";
+  const subtitle = mode === "login"
+    ? "Sign in to your agency workspace"
+    : mode === "reset"
+      ? "Choose a new password to regain access to your workspace"
+      : "Create an account and either create a brand-new agency or join an existing one";
+
   return (
     <div
       style={{
+        ...authVars,
         minHeight: "100vh",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background:
-          "radial-gradient(ellipse 80% 50% at 50% -10%,rgba(240,165,0,.09) 0%,transparent 70%),var(--bg)",
+        background: "linear-gradient(180deg,#f8fbff 0%,#edf3fa 100%)",
         padding: 20,
+        color: "var(--text)",
       }}
     >
-      <div style={{ width: "100%", maxWidth: 420 }}>
-        <div style={{ textAlign: "center", marginBottom: 36 }}>
+      <div style={{ width: "100%", maxWidth: 460 }}>
+        <div style={{ textAlign: "center", marginBottom: 30 }}>
           <div
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: 11,
-              background: "var(--bg2)",
+              background: "rgba(255,255,255,.92)",
               border: "1px solid var(--border2)",
-              borderRadius: 14,
+              borderRadius: 16,
               padding: "11px 18px",
               marginBottom: 22,
+              boxShadow: "0 10px 30px rgba(37,99,235,.08)",
             }}
           >
             <div
@@ -2475,67 +2625,35 @@ const AuthPage = ({ onLogin }) => {
               📡
             </div>
             <div>
-              <div
-                style={{
-                  fontFamily: "'Syne',sans-serif",
-                  fontWeight: 800,
-                  fontSize: 17,
-                }}
-              >
-                MediaDesk Pro
-              </div>
-              <div style={{ fontSize: 10, color: "var(--text3)" }}>
-                MEDIA SCHEDULE PLATFORM
-              </div>
+              <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 17 }}>MediaDesk Pro</div>
+              <div style={{ fontSize: 10, color: "var(--text3)" }}>MEDIA SCHEDULE PLATFORM</div>
             </div>
           </div>
 
-          <h1
-            style={{
-              fontFamily: "'Syne',sans-serif",
-              fontWeight: 800,
-              fontSize: 26,
-              letterSpacing: "-.03em",
-            }}
-          >
-            {mode === "login" ? "Welcome back" : "Create account"}
+          <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 28, letterSpacing: "-.03em", color: "var(--text)" }}>
+            {title}
           </h1>
-          <p style={{ color: "var(--text2)", marginTop: 7, fontSize: 14 }}>
-            {mode === "login"
-              ? "Sign in to your agency workspace"
-              : "Create an account and either create a brand-new agency or join an existing one"}
-          </p>
+          <p style={{ color: "var(--text2)", marginTop: 8, fontSize: 14, lineHeight: 1.6 }}>{subtitle}</p>
         </div>
 
-        <Card>
+        <div style={{ background: "rgba(255,255,255,.95)", border: "1px solid var(--border2)", borderRadius: 18, padding: 22, boxShadow: "0 20px 60px rgba(15,23,42,.10)" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {mode === "register" && (
               <>
-                <Field
-                  label="Full Name"
-                  value={f.name}
-                  onChange={u("name")}
-                  placeholder="Jane Okafor"
-                  required
-                />
-                <Field
-                  label="Job Title"
-                  value={f.title}
-                  onChange={u("title")}
-                  placeholder="Media Buyer / Account Executive"
-                />
+                <Field label="Full Name" value={f.name} onChange={u("name")} placeholder="Jane Okafor" required />
+                <Field label="Job Title" value={f.title} onChange={u("title")} placeholder="Media Buyer / Account Executive" />
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <button
                     type="button"
                     onClick={() => { setErr(""); setExistingAgencyMatch(null); setF(p => ({ ...p, agencyMode: "create", agencyCode: p.agencyCode || "" })); }}
-                    style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "create" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "create" ? "rgba(240,165,0,.12)" : "var(--bg3)", color: f.agencyMode === "create" ? "var(--accent)" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
+                    style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "create" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "create" ? "rgba(240,165,0,.12)" : "var(--bg3)", color: f.agencyMode === "create" ? "#8a5a00" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
                   >
                     Create New Agency
                   </button>
                   <button
                     type="button"
                     onClick={() => { setErr(""); setF(p => ({ ...p, agencyMode: "join", agency: p.agency || "" })); }}
-                    style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "join" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "join" ? "rgba(240,165,0,.12)" : "var(--bg3)", color: f.agencyMode === "join" ? "var(--accent)" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
+                    style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "join" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "join" ? "rgba(240,165,0,.12)" : "var(--bg3)", color: f.agencyMode === "join" ? "#8a5a00" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
                   >
                     Join With Invite Code
                   </button>
@@ -2575,27 +2693,16 @@ const AuthPage = ({ onLogin }) => {
                     note="Ask your agency admin for the invite code."
                   />
                 )}
-                <Field
-                  label="Phone Number"
-                  type="tel"
-                  value={f.phone}
-                  onChange={u("phone")}
-                  placeholder="+234 800 000 0000"
-                />
+                <Field label="Phone Number" type="tel" value={f.phone} onChange={u("phone")} placeholder="+234 800 000 0000" />
               </>
             )}
 
-            <Field
-              label="Email"
-              type="email"
-              value={f.email}
-              onChange={u("email")}
-              placeholder="you@agency.com"
-              required
-            />
+            {mode !== "reset" && (
+              <Field label="Email" type="email" value={f.email} onChange={u("email")} placeholder="you@agency.com" required />
+            )}
 
             <Field
-              label="Password"
+              label={mode === "reset" ? "New Password" : "Password"}
               type="password"
               value={f.password}
               onChange={u("password")}
@@ -2603,9 +2710,9 @@ const AuthPage = ({ onLogin }) => {
               required
             />
 
-            {mode === "register" && (
+            {(mode === "register" || mode === "reset") && (
               <Field
-                label="Confirm Password"
+                label={mode === "reset" ? "Confirm New Password" : "Confirm Password"}
                 type="password"
                 value={f.confirm}
                 onChange={u("confirm")}
@@ -2613,17 +2720,14 @@ const AuthPage = ({ onLogin }) => {
               />
             )}
 
+            {resetEmailSent && mode === "login" && (
+              <div style={{ background: "rgba(34,197,94,.08)", border: "1px solid rgba(34,197,94,.24)", borderRadius: 10, padding: "10px 13px", color: "#166534", fontSize: 12, lineHeight: 1.5 }}>
+                Reset link sent. Check your email and open the link to set a new password.
+              </div>
+            )}
+
             {err && (
-              <div
-                style={{
-                  background: "rgba(239,68,68,.1)",
-                  border: "1px solid rgba(239,68,68,.3)",
-                  borderRadius: 8,
-                  padding: "9px 13px",
-                  color: "var(--red)",
-                  fontSize: 12,
-                }}
-              >
+              <div style={{ background: "rgba(239,68,68,.1)", border: "1px solid rgba(239,68,68,.3)", borderRadius: 8, padding: "9px 13px", color: "var(--red)", fontSize: 12 }}>
                 {err}
               </div>
             )}
@@ -2633,32 +2737,39 @@ const AuthPage = ({ onLogin }) => {
               onClick={submit}
               loading={loading || (mode === "register" && f.agencyMode === "create" && agencyCheckLoading)}
               disabled={mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch}
-              style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
+              style={{ width: "100%", justifyContent: "center", marginTop: 4, boxShadow: "0 10px 24px rgba(240,165,0,.18)" }}
             >
-              {mode === "login" ? "Sign In →" : (existingAgencyMatch && f.agencyMode === "create" ? "Already Existing Contact Admin" : "Create Account →")}
+              {mode === "login" ? "Sign In →" : mode === "reset" ? "Update Password →" : (existingAgencyMatch && f.agencyMode === "create" ? "Already Existing Contact Admin" : "Create Account →")}
             </Btn>
 
+            {mode === "login" && (
+              <button
+                type="button"
+                onClick={sendResetLink}
+                disabled={loading}
+                style={{ background: "none", border: "none", color: "var(--blue)", fontWeight: 600, cursor: "pointer", fontSize: 13, alignSelf: "center" }}
+              >
+                Forgot password?
+              </button>
+            )}
+
             <p style={{ textAlign: "center", color: "var(--text2)", fontSize: 13 }}>
-              {mode === "login" ? "No account? " : "Have an account? "}
+              {mode === "login" ? "No account? " : mode === "register" ? "Have an account? " : "Remembered your password? "}
               <button
                 onClick={() => {
-                  setMode(mode === "login" ? "register" : "login");
+                  const next = mode === "login" ? "register" : "login";
+                  setMode(next);
                   setErr("");
+                  setResetEmailSent(false);
+                  if (mode === "reset" && onResetHandled) onResetHandled();
                 }}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--accent)",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
+                style={{ background: "none", border: "none", color: "var(--blue)", fontWeight: 700, cursor: "pointer", fontSize: 13 }}
               >
                 {mode === "login" ? "Register" : "Sign In"}
               </button>
             </p>
           </div>
-        </Card>
+        </div>
       </div>
     </div>
   );
@@ -3369,6 +3480,440 @@ const normaliseExcelRow = (row, vendors) => {
   };
 };
 
+
+
+const MPO_TEMPLATE_REQUIRED_COLUMNS = ["Campaign*", "Client*", "Medium*", "Vendor*", "Channel / Station*", "Month*", "Date*", "Time Belt*", "Material / Creative*", "Duration (secs)*", "Spots*", "Rate (NGN)*"];
+
+const cleanTemplateCell = (value) => {
+  if (value === undefined || value === null) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  return String(value).trim();
+};
+
+const pickTemplateValue = (row, aliases = []) => {
+  const keys = Object.keys(row || {});
+  const normalizedMap = keys.reduce((acc, key) => {
+    acc[key.toLowerCase().trim()] = key;
+    return acc;
+  }, {});
+  for (const alias of aliases) {
+    const foundKey = normalizedMap[String(alias).toLowerCase().trim()];
+    if (foundKey !== undefined) {
+      const value = row[foundKey];
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+  }
+  return "";
+};
+
+const parseTemplateDateValue = (value) => {
+  if (!value && value !== 0) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "number") {
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+    const asDate = new Date(excelEpoch.getTime() + value * 24 * 60 * 60 * 1000);
+    if (!Number.isNaN(asDate.getTime())) return asDate;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const titleCaseMonth = (value, dateObj) => {
+  const fallback = dateObj ? dateObj.toLocaleString("en-US", { month: "long" }) : "";
+  const raw = cleanTemplateCell(value || fallback);
+  if (!raw) return fallback;
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+};
+
+const matchCampaignFromTemplate = ({ row, campaigns, clients }) => {
+  const campaignName = cleanTemplateCell(pickTemplateValue(row, ["Campaign*", "Campaign", "Campaign Name"]));
+  const clientName = cleanTemplateCell(pickTemplateValue(row, ["Client*", "Client", "Client Name"]));
+  const matchedClient = clients.find(c => (c.name || "").trim().toLowerCase() === clientName.toLowerCase());
+  const matchedCampaign = campaigns.find(c => {
+    const campaignMatches = (c.name || "").trim().toLowerCase() === campaignName.toLowerCase();
+    const clientMatches = !clientName || (matchedClient ? c.clientId === matchedClient.id : (c.clientName || "").trim().toLowerCase() === clientName.toLowerCase());
+    return campaignMatches && clientMatches;
+  });
+  return { campaignName, clientName, matchedClient, matchedCampaign };
+};
+
+const matchVendorFromTemplate = ({ vendorName, channelName, vendors }) => {
+  const normalizedVendor = cleanTemplateCell(vendorName).toLowerCase();
+  const normalizedChannel = cleanTemplateCell(channelName).toLowerCase();
+  const vendorByChannel = vendors.find(v => (v.name || "").trim().toLowerCase() === normalizedChannel);
+  if (vendorByChannel) return vendorByChannel;
+  return vendors.find(v => (v.name || "").trim().toLowerCase() === normalizedVendor) || null;
+};
+
+const parseMpoTemplateRows = (rows, { vendors, campaigns, clients }) => {
+  const parsed = [];
+  const issues = [];
+  rows.forEach((row, index) => {
+    const rowNumber = index + 5;
+    const vendorName = cleanTemplateCell(pickTemplateValue(row, ["Vendor*", "Vendor", "Vendor Name"]));
+    const channelName = cleanTemplateCell(pickTemplateValue(row, ["Channel / Station*", "Channel / Station", "Channel", "Station"]));
+    const medium = cleanTemplateCell(pickTemplateValue(row, ["Medium*", "Medium"]));
+    const monthRaw = pickTemplateValue(row, ["Month*", "Month"]);
+    const dateRaw = pickTemplateValue(row, ["Date*", "Date"]);
+    const dateObj = parseTemplateDateValue(dateRaw);
+    const monthLabel = titleCaseMonth(monthRaw, dateObj);
+    const timeBelt = cleanTemplateCell(pickTemplateValue(row, ["Time Belt*", "Time Belt", "Timebelt"]));
+    const material = cleanTemplateCell(pickTemplateValue(row, ["Material / Creative*", "Material / Creative", "Material", "Creative"]));
+    const duration = cleanTemplateCell(pickTemplateValue(row, ["Duration (secs)*", "Duration (secs)", "Duration"]));
+    const spots = parseFloat(pickTemplateValue(row, ["Spots*", "Spots"]) || 0) || 0;
+    const ratePerSpot = parseFloat(pickTemplateValue(row, ["Rate (NGN)*", "Rate (NGN)", "Rate", "Rate Per Spot"]) || 0) || 0;
+    const programme = cleanTemplateCell(pickTemplateValue(row, ["Programme / Placement", "Programme", "Placement", "Programme / Slot"]));
+    const notes = cleanTemplateCell(pickTemplateValue(row, ["Notes", "Remark", "Remarks"]));
+    const weekdayValue = cleanTemplateCell(pickTemplateValue(row, ["Weekday (auto)", "Weekday"]));
+    const market = cleanTemplateCell(pickTemplateValue(row, ["Market / City", "Market", "City"]));
+    const currency = cleanTemplateCell(pickTemplateValue(row, ["Currency"])) || "NGN";
+
+    const requiredChecks = [
+      [vendorName, "Vendor"],
+      [channelName, "Channel / Station"],
+      [medium, "Medium"],
+      [monthLabel, "Month"],
+      [timeBelt, "Time Belt"],
+      [material, "Material / Creative"],
+      [duration, "Duration"],
+    ];
+    requiredChecks.forEach(([value, label]) => {
+      if (!String(value || "").trim()) issues.push(`Row ${rowNumber}: Missing ${label}.`);
+    });
+    if (!dateObj) issues.push(`Row ${rowNumber}: Invalid or missing Date.`);
+    if (spots <= 0) issues.push(`Row ${rowNumber}: Spots must be greater than zero.`);
+    if (ratePerSpot <= 0) issues.push(`Row ${rowNumber}: Rate (NGN) must be greater than zero.`);
+
+    const { campaignName, clientName, matchedClient, matchedCampaign } = matchCampaignFromTemplate({ row, campaigns, clients });
+    if (!campaignName) issues.push(`Row ${rowNumber}: Missing Campaign.`);
+    if (!clientName) issues.push(`Row ${rowNumber}: Missing Client.`);
+    if (campaignName && !matchedCampaign) issues.push(`Row ${rowNumber}: Campaign "${campaignName}" not found in Campaigns.`);
+
+    const matchedVendor = matchVendorFromTemplate({ vendorName, channelName, vendors });
+    if (!matchedVendor) issues.push(`Row ${rowNumber}: Vendor / Channel "${channelName || vendorName}" not found in Vendors.`);
+
+    parsed.push({
+      rowNumber,
+      vendorName,
+      channelName,
+      medium,
+      monthLabel,
+      dateObj,
+      dateIso: dateObj ? dateObj.toISOString().slice(0, 10) : "",
+      weekday: weekdayValue || (dateObj ? dateObj.toLocaleString("en-US", { weekday: "short" }) : ""),
+      programme,
+      timeBelt,
+      material,
+      duration: duration || "30",
+      spots,
+      ratePerSpot,
+      notes,
+      market,
+      currency,
+      campaignName,
+      clientName,
+      matchedCampaign,
+      matchedClient,
+      matchedVendor,
+      batchGroup: cleanTemplateCell(pickTemplateValue(row, ["MPO Batch / Group", "Batch", "Group"])),
+    });
+  });
+
+  return { parsed, issues };
+};
+
+const buildTemplateMpoDrafts = (parsedRows, { user, appSettings, vendors, campaigns, clients, existingMpos }) => {
+  const settings = appSettings || DEFAULT_APP_SETTINGS;
+  const grouped = new Map();
+  parsedRows.forEach((row) => {
+    if (!row.matchedCampaign || !row.matchedVendor || !row.dateObj) return;
+    const year = String(row.dateObj.getFullYear());
+    const key = [row.matchedCampaign.id, row.matchedVendor.id, row.channelName || row.matchedVendor.name || row.vendorName, row.monthLabel, year, row.batchGroup || "default"].join("|");
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  });
+
+  return Array.from(grouped.values()).map((groupRows) => {
+    const first = groupRows[0];
+    const campaign = first.matchedCampaign || campaigns.find(c => c.id === first.matchedCampaign?.id);
+    const client = clients.find(c => c.id === campaign?.clientId) || first.matchedClient;
+    const vendor = vendors.find(v => v.id === first.matchedVendor.id) || first.matchedVendor;
+    const totalGross = groupRows.reduce((sum, row) => sum + (row.spots * row.ratePerSpot), 0);
+    const discPct = vendor ? (parseFloat(vendor.discount) || 0) / 100 : 0;
+    const commPct = vendor ? (parseFloat(vendor.commission) || 0) / 100 : 0;
+    const discAmt = roundMoneyValue(totalGross * discPct, settings);
+    const lessDisc = roundMoneyValue(totalGross - discAmt, settings);
+    const commAmt = roundMoneyValue(lessDisc * commPct, settings);
+    const afterComm = roundMoneyValue(lessDisc - commAmt, settings);
+    const surchPct = 0;
+    const surchAmt = 0;
+    const netVal = roundMoneyValue(afterComm + surchAmt, settings);
+    const vatPct = parseFloat(settings?.vatRate) || 7.5;
+    const vatAmt = roundMoneyValue(netVal * vatPct / 100, settings);
+    const grandTotal = roundMoneyValue(netVal + vatAmt, settings);
+    const months = Array.from(new Set(groupRows.map(row => row.monthLabel).filter(Boolean)));
+    const totalSpots = groupRows.reduce((sum, row) => sum + row.spots, 0);
+    const mpoNo = "Pending auto-number on save";
+    return {
+      campaign,
+      client,
+      vendor,
+      channelName: first.channelName,
+      monthLabel: first.monthLabel,
+      year: String(first.dateObj.getFullYear()),
+      rowsCount: groupRows.length,
+      totalSpots,
+      totalGross,
+      grandTotal,
+      currency: first.currency || "NGN",
+      market: first.market || "",
+      sourceRows: groupRows,
+      record: {
+        id: uid(),
+        campaignId: campaign?.id || "",
+        vendorId: vendor?.id || "",
+        mpoNo,
+        date: new Date().toISOString().slice(0, 10),
+        month: first.monthLabel,
+        months,
+        year: String(first.dateObj.getFullYear()),
+        medium: first.medium || campaign?.medium || "",
+        signedBy: "",
+        signedTitle: "",
+        preparedBy: user?.name || "",
+        preparedContact: user?.phone || user?.email || "",
+        preparedTitle: user?.title || "",
+        preparedSignature: user?.signatureDataUrl || "",
+        signedSignature: "",
+        agencyAddress: user?.agencyAddress || "5, Craig Street, Ogudu GRA, Lagos",
+        agencyEmail: user?.agencyEmail || "",
+        agencyPhone: user?.agencyPhone || "",
+        transmitMsg: "",
+        status: "draft",
+        vendorName: vendor?.name || first.channelName || first.vendorName || "",
+        clientName: client?.name || first.clientName || "",
+        campaignName: campaign?.name || first.campaignName || "",
+        brand: campaign?.brand || "",
+        spots: groupRows.map(row => ({
+          id: uid(),
+          programme: row.programme || row.channelName || row.vendorName,
+          wd: row.weekday || "",
+          timeBelt: row.timeBelt,
+          material: row.material,
+          duration: String(row.duration || "30"),
+          rateId: "",
+          customRate: String(row.ratePerSpot),
+          ratePerSpot: row.ratePerSpot,
+          spots: String(row.spots),
+          calendarDays: row.spots === 1 && row.dateObj ? [row.dateObj.getDate()] : [],
+          scheduleMonth: row.monthLabel,
+          notes: row.notes || "",
+        })),
+        totalSpots,
+        totalGross,
+        discPct,
+        discAmt,
+        lessDisc,
+        commPct,
+        commAmt,
+        afterComm,
+        surchPct,
+        surchAmt,
+        surchLabel: "",
+        netVal,
+        vatPct,
+        vatAmt,
+        grandTotal,
+        terms: settings?.mpoTerms || DEFAULT_APP_SETTINGS.mpoTerms,
+        roundToWholeNaira: !!settings?.roundToWholeNaira,
+        dispatchStatus: "pending",
+        dispatchedAt: null,
+        dispatchedBy: null,
+        dispatchContact: "",
+        dispatchNote: "",
+        signedMpoUrl: "",
+        invoiceStatus: "pending",
+        invoiceNo: "",
+        invoiceAmount: 0,
+        invoiceReceivedAt: null,
+        invoiceUrl: "",
+        proofStatus: "pending",
+        proofUrl: "",
+        proofReceivedAt: null,
+        plannedSpotsExecution: totalSpots,
+        airedSpots: 0,
+        missedSpots: 0,
+        makegoodSpots: 0,
+        reconciliationStatus: "not_started",
+        reconciliationNotes: "",
+        reconciledAmount: grandTotal,
+        paymentStatus: "unpaid",
+        paymentReference: "",
+        paidAt: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    };
+  });
+};
+
+const MpoTemplateImportModal = ({ vendors, clients, campaigns, mpos, user, appSettings, onImport, onClose }) => {
+  const [step, setStep] = useState("upload");
+  const [loading, setLoading] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [issues, setIssues] = useState([]);
+  const [drafts, setDrafts] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const fileRef = useRef();
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setLoading(true);
+    setFileName(file.name);
+    try {
+      const XLSX = await loadSheetJS();
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+      const preferredSheet = wb.SheetNames.find(name => name.toLowerCase() === "mpo_import_template") || wb.SheetNames.find(name => name.toLowerCase().includes("template")) || wb.SheetNames[0];
+      const ws = wb.Sheets[preferredSheet];
+      const rawRows = XLSX.utils.sheet_to_json(ws, { defval: "", range: 3, raw: true });
+      if (!rawRows.length) {
+        setIssues(["The template sheet has no data rows. Fill the MPO_Import_Template sheet and try again."]);
+        setDrafts([]);
+        setSelected([]);
+        setStep("preview");
+        setLoading(false);
+        return;
+      }
+      const availableHeaders = Object.keys(rawRows[0] || {});
+      const missingRequired = MPO_TEMPLATE_REQUIRED_COLUMNS.filter(col => !availableHeaders.includes(col));
+      if (missingRequired.length) {
+        setIssues([`This file does not match the MPO flat import template. Missing columns: ${missingRequired.join(", ")}.`]);
+        setDrafts([]);
+        setSelected([]);
+        setStep("preview");
+        setLoading(false);
+        return;
+      }
+      const nonEmptyRows = rawRows.filter(row => Object.values(row || {}).some(value => String(value ?? "").trim() !== ""));
+      const { parsed, issues: parseIssues } = parseMpoTemplateRows(nonEmptyRows, { vendors, campaigns, clients });
+      const builtDrafts = buildTemplateMpoDrafts(parsed, { user, appSettings, vendors, campaigns, clients, existingMpos: mpos });
+      const readyDrafts = builtDrafts.filter(draft => draft.record.campaignId && draft.record.vendorId && draft.record.spots.length);
+      if (!readyDrafts.length) parseIssues.push("No valid MPO drafts could be generated from this file.");
+      setIssues(parseIssues);
+      setDrafts(readyDrafts);
+      setSelected(readyDrafts.map((_, index) => index));
+      setStep("preview");
+    } catch (error) {
+      setIssues([error.message || "Failed to parse the template file."]);
+      setDrafts([]);
+      setSelected([]);
+      setStep("preview");
+    }
+    setLoading(false);
+  };
+
+  const toggleRow = (index) => setSelected(current => current.includes(index) ? current.filter(x => x !== index) : [...current, index]);
+  const toggleAll = () => setSelected(selected.length === drafts.length ? [] : drafts.map((_, index) => index));
+  const importSelected = async () => {
+    const payload = drafts.filter((_, index) => selected.includes(index)).map(draft => draft.record);
+    if (!payload.length) return;
+    await onImport(payload);
+    setStep("done");
+  };
+
+  return (
+    <Modal title="Import MPO Flat Template" onClose={onClose} width={1000}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {step === "upload" && (
+          <Card style={{ padding: 22 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
+              <div>
+                <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>Upload the MPO flat import template</div>
+                <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 6 }}>Use the exact .xlsx template. Each row should represent one airing instruction. Draft MPOs will be grouped by campaign, vendor/channel, and month.</div>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <Btn variant="blue" onClick={() => fileRef.current?.click()} loading={loading}>{loading ? "Parsing template..." : "Choose Template File"}</Btn>
+                {fileName ? <Badge color="blue">{fileName}</Badge> : null}
+              </div>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={e => handleFile(e.target.files?.[0])} />
+              <div style={{ fontSize: 12, color: "var(--text3)" }}>Required tabs: <strong>MPO_Import_Template</strong> or a sheet with the same column headers.</div>
+            </div>
+          </Card>
+        )}
+
+        {step === "preview" && (
+          <>
+            <Card style={{ padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Preview generated MPO drafts</div>
+                  <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 4 }}>{drafts.length} draft group{drafts.length !== 1 ? "s" : ""} ready from {fileName || "template"}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Btn variant="ghost" size="sm" onClick={() => fileRef.current?.click()}>Replace File</Btn>
+                  {drafts.length ? <Btn variant="ghost" size="sm" onClick={toggleAll}>{selected.length === drafts.length ? "Clear Selection" : "Select All"}</Btn> : null}
+                </div>
+              </div>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={e => handleFile(e.target.files?.[0])} />
+            </Card>
+
+            {issues.length ? (
+              <Card style={{ padding: 18, border: "1px solid rgba(225, 90, 72, .28)", background: "rgba(225, 90, 72, .06)" }}>
+                <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Import issues to fix</div>
+                <div style={{ display: "grid", gap: 6, maxHeight: 220, overflowY: "auto", fontSize: 12, color: "var(--text2)" }}>
+                  {issues.map((issue, index) => <div key={index}>• {issue}</div>)}
+                </div>
+              </Card>
+            ) : null}
+
+            {drafts.length ? (
+              <div style={{ display: "grid", gap: 12, maxHeight: "52vh", overflowY: "auto" }}>
+                {drafts.map((draft, index) => {
+                  const selectedRow = selected.includes(index);
+                  return (
+                    <Card key={`${draft.record.campaignId}-${draft.record.vendorId}-${draft.monthLabel}-${index}`} style={{ padding: 16, border: selectedRow ? "1px solid rgba(59,126,245,.34)" : "1px solid var(--border)" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                        <label style={{ display: "flex", gap: 12, alignItems: "flex-start", cursor: "pointer", flex: 1 }}>
+                          <input type="checkbox" checked={selectedRow} onChange={() => toggleRow(index)} />
+                          <div>
+                            <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>{draft.record.campaignName} • {draft.vendor?.name || draft.channelName}</div>
+                            <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 4 }}>{draft.monthLabel} {draft.year} • {draft.rowsCount} line{draft.rowsCount !== 1 ? "s" : ""} • {draft.totalSpots} spot{draft.totalSpots !== 1 ? "s" : ""}</div>
+                          </div>
+                        </label>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{fmtN(draft.grandTotal)}</div>
+                          <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>Gross {fmtN(draft.totalGross)}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginTop: 12 }}>
+                        <div style={{ fontSize: 12, color: "var(--text2)" }}><strong style={{ color: "var(--text)" }}>Client:</strong> {draft.record.clientName || "—"}</div>
+                        <div style={{ fontSize: 12, color: "var(--text2)" }}><strong style={{ color: "var(--text)" }}>Medium:</strong> {draft.record.medium || "—"}</div>
+                        <div style={{ fontSize: 12, color: "var(--text2)" }}><strong style={{ color: "var(--text)" }}>Channel:</strong> {draft.channelName || "—"}</div>
+                        <div style={{ fontSize: 12, color: "var(--text2)" }}><strong style={{ color: "var(--text)" }}>Market:</strong> {draft.market || "—"}</div>
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            ) : (
+              <Card><Empty icon="🧾" title="No draft MPOs ready" sub="Fix the issues above or upload a valid flat import template." /></Card>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+              {drafts.length ? <Btn onClick={importSelected}>Generate {selected.length || 0} MPO Draft{selected.length === 1 ? "" : "s"}</Btn> : <Btn variant="ghost" onClick={onClose}>Close</Btn>}
+            </div>
+          </>
+        )}
+
+        {step === "done" && (
+          <Card><Empty icon="✅" title="MPO drafts created" sub="The selected template rows have been converted into draft MPOs." /></Card>
+        )}
+      </div>
+    </Modal>
+  );
+};
 const ExcelImportModal = ({ vendors, onImport, onClose }) => {
   const [step, setStep]         = useState("upload");
   const [rows, setRows]         = useState([]);
@@ -3855,8 +4400,7 @@ const buildMPOPdf = (mpo) => {
   const dNums = Array.from({length:dim},(_,i)=>i+1);
 
   /* costing */
-  const costLines = sWD.map(s=>({ programme:s.programme||'', material:s.material||'', duration:s.duration||'', cnt:s.ad.length||parseInt(s.spots)||0, rate:parseFloat(s.ratePerSpot)||0 }));
-  costLines.forEach(l=>l.gross=l.cnt*l.rate);
+  const costLines = buildProgrammeCostLines(sWD);
   const subTotal  = costLines.reduce((a,l)=>a+l.gross,0);
   const vdPct     = parseFloat(mpo.discPct)||0;
   const vdAmt     = subTotal*vdPct;
@@ -4033,7 +4577,7 @@ const buildMPOPdf = (mpo) => {
   /* per-spot cost lines */
   const cH=10;
   RECT(ML,y,CW,cH,26,58,107,null,null,null);
-  [['Programme',50],['Material',60],['Duration',20],['Spots',18],['Rate/Spot (N)',42],['Total (N)',42]].reduce((x,[h,w])=>{
+  [['Programme',78],['Duration',26],['Spots',20],['Rate/Spot (N)',38],['Total (N)',38]].reduce((x,[h,w])=>{
     BT(x+1,y+7,5.5,true,255,255,255,h); return x+w;
   },ML);
   y+=cH;
@@ -4042,8 +4586,8 @@ const buildMPOPdf = (mpo) => {
     checkY(cH+2);
     RECT(ML,y,CW,cH,ri%2===0?252:246,ri%2===0?252:248,ri%2===0?255:252,210,210,210);
     let cx=ML;
-    [[clip(l.programme,16),50,false],[clip(l.material,20),60,false],[String(l.duration)+'s',20,false],
-     [String(l.cnt),18,true],[fmtN(l.rate),42,true],[fmtN(l.gross),42,true]].forEach(([v,w,b])=>{
+    [[clip(l.programme,28),78,false],[String(l.duration)+'s',26,false],
+     [String(l.cnt),20,true],[fmtN(l.rate),38,true],[fmtN(l.gross),38,true]].forEach(([v,w,b])=>{
       BT(cx+1,y+7,5.5,b,20,20,20,v); cx+=w;
     });
     y+=cH;
@@ -4426,12 +4970,7 @@ const buildMPOHTML = (mpo) => {
 
   const firstDur = allSWD.length > 0 ? (allSWD[0].duration||"30")+"SECS" : "30SECS";
 
-  const costLines = allSWD.map(s => {
-    const cnt  = s.ad ? (s.ad.length || parseInt(s.spots)||0) : (parseInt(s.spots)||0);
-    const rate = parseFloat(s.ratePerSpot)||0;
-    return { programme: s.programme||"", material: s.material||"", duration: s.duration||"",
-             cnt, rate, gross: cnt * rate };
-  });
+  const costLines = buildProgrammeCostLines(allSWD);
 
   const subTotal   = costLines.reduce((a,l)=>a+l.gross, 0);
   const vdPct      = parseFloat(discPct)||0;
@@ -4453,10 +4992,10 @@ const buildMPOHTML = (mpo) => {
 
   const LOGO_SRC = `data:image/jpeg;base64,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`;
 
-  const vdRow   = vdPct > 0 ? '<tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">Volume Discount ('+Math.round(vdPct*100)+'%)</td><td style="text-align:right;color:#b00">- &#8358; '+fmt(vdAmt)+'</td></tr><tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">Less Discount</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(afterDisc)+'</td></tr>' : "";
-  const cRow    = cPct > 0  ? '<tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">Agency Commission ('+Math.round(cPct*100)+'%)</td><td style="text-align:right;color:#b00">- &#8358; '+fmt(cAmt)+'</td></tr><tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">Less Commission</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(afterComm)+'</td></tr>' : "";
-  const spRow   = spPct > 0 ? '<tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">'+(surchLabel||("Surcharge ("+Math.round(spPct*100)+"%)"))+' </td><td style="text-align:right;color:#b25400">+ &#8358; '+fmt(spAmt)+'</td></tr><tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">Net After Surcharge</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(netAmt)+'</td></tr>' : "";
-  const costBodyRows = costLines.map(l => '<tr><td>'+l.programme+'</td><td>'+l.material+'</td><td style="text-align:center">'+l.duration+'secs</td><td style="text-align:center;font-weight:700">'+l.cnt+'</td><td style="text-align:right">'+fmt(l.rate)+'</td><td style="text-align:right;font-weight:700">'+fmt(l.gross)+'</td></tr>').join("");
+  const vdRow   = vdPct > 0 ? '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Volume Discount ('+Math.round(vdPct*100)+'%)</td><td style="text-align:right;color:#b00">- &#8358; '+fmt(vdAmt)+'</td></tr><tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Less Discount</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(afterDisc)+'</td></tr>' : "";
+  const cRow    = cPct > 0  ? '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Agency Commission ('+Math.round(cPct*100)+'%)</td><td style="text-align:right;color:#b00">- &#8358; '+fmt(cAmt)+'</td></tr><tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Less Commission</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(afterComm)+'</td></tr>' : "";
+  const spRow   = spPct > 0 ? '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">'+(surchLabel||("Surcharge ("+Math.round(spPct*100)+"%)"))+' </td><td style="text-align:right;color:#b25400">+ &#8358; '+fmt(spAmt)+'</td></tr><tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Net After Surcharge</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(netAmt)+'</td></tr>' : "";
+  const costBodyRows = costLines.map(l => '<tr><td>'+l.programme+'</td><td style="text-align:center">'+l.duration+'secs</td><td style="text-align:center;font-weight:700">'+l.cnt+'</td><td style="text-align:right">'+fmt(l.rate)+'</td><td style="text-align:right;font-weight:700">'+fmt(l.gross)+'</td></tr>').join("");
   const termsRows = terms.map((t,i) => '<tr><td class="n">'+(i+1)+'</td><td class="t">'+t+'</td></tr>').join("");
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>MPO ${mpoNo}</title>
@@ -4538,8 +5077,7 @@ const buildMPOHTML = (mpo) => {
   <div class="costing-title">C &nbsp; O &nbsp; S &nbsp; T &nbsp; I &nbsp; N &nbsp; G</div>
   <table class="cost">
     <thead><tr>
-      <th style="text-align:left;min-width:100px">PROGRAMME</th>
-      <th style="text-align:left;min-width:110px">MATERIAL</th>
+      <th style="text-align:left;min-width:150px">PROGRAMME</th>
       <th style="text-align:center;min-width:55px">DURATION</th>
       <th style="text-align:center;min-width:60px">NO OF SPOTS</th>
       <th style="text-align:right;min-width:90px">RATE/SPOT (&#8358;)</th>
@@ -4547,10 +5085,10 @@ const buildMPOHTML = (mpo) => {
     </tr></thead>
     <tbody>${costBodyRows}</tbody>
     <tfoot>
-      <tr class="sum"><td colspan="5" style="text-align:right;font-weight:700;border-top:2px solid #888">Sub Total</td><td style="text-align:right;font-weight:700;border-top:2px solid #888">&#8358; ${fmt(subTotal)}</td></tr>
+      <tr class="sum"><td colspan="4" style="text-align:right;font-weight:700;border-top:2px solid #888">Sub Total</td><td style="text-align:right;font-weight:700;border-top:2px solid #888">&#8358; ${fmt(subTotal)}</td></tr>
       ${vdRow}${cRow}${spRow}
-      <tr class="sum"><td colspan="5" style="text-align:right;font-weight:700">VAT (${parseFloat(vatPct) || 7.5}%)</td><td style="text-align:right;font-weight:700">&#8358; ${fmt(vatAmt)}</td></tr>
-      <tr class="payable"><td colspan="5" style="text-align:right;letter-spacing:.5px">Total Amount Payable &#8596;</td><td style="text-align:right;color:#1a3a6b;font-size:11px">&#8358; ${fmt(totalPayable)}</td></tr>
+      <tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">VAT (${parseFloat(vatPct) || 7.5}%)</td><td style="text-align:right;font-weight:700">&#8358; ${fmt(vatAmt)}</td></tr>
+      <tr class="payable"><td colspan="4" style="text-align:right;letter-spacing:.5px">Total Amount Payable &#8596;</td><td style="text-align:right;color:#1a3a6b;font-size:11px">&#8358; ${fmt(totalPayable)}</td></tr>
     </tfoot>
   </table>
 
@@ -4623,7 +5161,7 @@ const DailyCalendar = ({ month, year, calRows, setCalRows, vendorRates, fmtN, bl
     }));
 
   const inp = (extra = {}) => ({
-    background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 6,
+    background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 5,
     padding: "5px 8px", color: "var(--text)", fontSize: 11, outline: "none",
     width: "100%", ...extra
   });
@@ -4806,16 +5344,16 @@ const DailyCalendar = ({ month, year, calRows, setCalRows, vendorRates, fmtN, bl
                     gap: 3, marginBottom: 4 }}>
                   {DAY_LABELS.map((d, i) => (
                     <div key={d} style={{
-                      textAlign: "center", fontSize: 10, fontWeight: 700, letterSpacing: .5,
+                      textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: .4,
                       color: i === 0 || i === 6 ? "var(--accent)" : "var(--text3)",
-                      padding: "4px 0"
+                      padding: "3px 0"
                     }}>{d}</div>
                   ))}
                 </div>
 
                 {/* Weeks */}
                 {weeks.map((wk, wi) => (
-                  <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 3 }}>
+                  <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 2 }}>
                     {wk.map((d, di) => {
                       if (!d) return <div key={`e${di}`} />;
                       const isActive = row.selectedDates.has(d);
@@ -4826,12 +5364,12 @@ const DailyCalendar = ({ month, year, calRows, setCalRows, vendorRates, fmtN, bl
                         <div key={d} onClick={() => toggleDate(row.id, d)}
                           style={{
                             aspectRatio: "1", display: "flex", alignItems: "center",
-                            justifyContent: "center", borderRadius: 8, cursor: "pointer",
+                            justifyContent: "center", borderRadius: 7, cursor: "pointer",
                             border: isActive ? "2px solid var(--accent)" : "1px solid var(--border2)",
                             background: isActive ? "var(--accent)" : isWkend ? "rgba(240,165,0,.05)" : "var(--bg3)",
                             color: isActive ? "#000" : isWkend ? "var(--accent)" : "var(--text)",
                             fontWeight: isActive ? 800 : isWkend ? 600 : 400,
-                            fontSize: 12, transition: "all .1s",
+                            fontSize: 11, transition: "all .1s",
                             boxShadow: isActive ? "0 2px 8px rgba(240,165,0,.35)" : "none"
                           }}>
                           {d}
@@ -4883,7 +5421,9 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
   const [executionUploading, setExecutionUploading] = useState({ signedMpo: false, invoice: false, proof: false });
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [workflowPanelOpen, setWorkflowPanelOpen] = useState(true);
+  const workflowPanelPrefKey = "msp_mpo_workflow_panel_open";
+  const [workflowPanelOpen, setWorkflowPanelOpen] = useState(() => store.get(workflowPanelPrefKey, true));
+  const [templateImportOpen, setTemplateImportOpen] = useState(false);
 
   const VAT_RATE = parseFloat(appSettings?.vatRate) || 7.5;
   const [surcharge, setSurcharge] = useState({ pct: "", label: "" });
@@ -4942,8 +5482,9 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
   const client = clients.find(c => c.id === campaign?.clientId);
   const vendor = vendors.find(v => v.id === mpoData.vendorId);
   const vendorRates = activeOnly(rates).filter(r => r.vendorId === mpoData.vendorId);
+  const programmeCostLines = buildProgrammeCostLines(spots);
   const totalSpots = spots.reduce((s, r) => s + (parseFloat(r.spots) || 0), 0);
-  const totalGross = spots.reduce((s, r) => s + (parseFloat(r.spots) || 0) * (parseFloat(r.ratePerSpot) || 0), 0);
+  const totalGross = programmeCostLines.reduce((sum, line) => sum + line.gross, 0);
   const discPct = vendor ? (parseFloat(vendor.discount) || 0) / 100 : 0;
   const commPct = vendor ? (parseFloat(vendor.commission) || 0) / 100 : 0;
   const discAmt = roundMoneyValue(totalGross * discPct, appSettings);
@@ -4956,6 +5497,10 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
   const vatAmt = roundMoneyValue(netVal * VAT_RATE / 100, appSettings);
   const grandTotal = roundMoneyValue(netVal + vatAmt, appSettings);
   const rateOptions = vendorRates.map(r => ({ value: r.id, label: `${r.programme || "Unnamed"} – ${fmtN(r.ratePerSpot)}` }));
+
+  useEffect(() => {
+    store.set(workflowPanelPrefKey, workflowPanelOpen);
+  }, [workflowPanelOpen]);
 
   // When campaign changes, auto-generate MPO number with brand
   useEffect(() => {
@@ -5331,6 +5876,41 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
     }
   };
 
+
+  const importTemplateDrafts = async (records) => {
+    if (!canManage) {
+      setToast({ msg: readOnlyMessage(user), type: "error" });
+      return;
+    }
+    if (!records?.length) {
+      setToast({ msg: "No MPO drafts were selected for import.", type: "error" });
+      return;
+    }
+    try {
+      const created = [];
+      for (const baseRecord of records) {
+        const campaignForRecord = campaigns.find(c => c.id === baseRecord.campaignId);
+        const generatedMpoNo = await generateNextMpoNoFromSupabase(campaignForRecord?.brand || baseRecord.brand || "MPO");
+        const record = { ...baseRecord, mpoNo: generatedMpoNo, createdAt: Date.now(), updatedAt: Date.now() };
+        const saved = await createMpoInSupabase(user.agencyId, user.id, record);
+        created.push(saved);
+        createAuditEventInSupabase({
+          agencyId: user.agencyId,
+          recordType: "mpo",
+          recordId: saved.id,
+          action: "created",
+          actor: user,
+          metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || 0, source: "flat_template_import" },
+        }).catch(error => console.error("Failed to write MPO audit event:", error));
+      }
+      setMpos(current => [...created, ...current]);
+      setTemplateImportOpen(false);
+      setToast({ msg: `${created.length} MPO draft${created.length !== 1 ? "s" : ""} generated from the flat import template.`, type: "success" });
+    } catch (error) {
+      setToast({ msg: error.message || "Failed to import MPO template.", type: "error" });
+    }
+  };
+
   const delMPO = async (id) => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
     try {
@@ -5515,9 +6095,21 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 10 }}>
         <div><h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>MPO Generator</h1><p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Create, manage & export Media Purchase Orders</p></div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}><Field value={searchTerm} onChange={setSearchTerm} placeholder="Search MPO, vendor, client..." /><Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} /><Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />{canManage && <Btn icon="+" onClick={openNew}>New MPO</Btn>}</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}><Field value={searchTerm} onChange={setSearchTerm} placeholder="Search MPO, vendor, client..." /><Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} /><Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />{canManage && <Btn variant="blue" onClick={() => setTemplateImportOpen(true)}>Import MPO Template</Btn>}{canManage && <Btn icon="+" onClick={openNew}>New MPO</Btn>}</div>
       </div>
-      {hasSavedDraft && <Card style={{ marginBottom: 14, padding: "14px 18px", background: "rgba(59,126,245,.08)", border: "1px solid rgba(59,126,245,.22)" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}><div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>Saved MPO draft found</div><div style={{ fontSize: 12, color: "var(--text2)", marginTop: 3 }}>Your last in-progress MPO was autosaved locally. You can resume it or clear it.</div></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Btn variant="blue" size="sm" onClick={resumeSavedDraft}>Resume Draft</Btn><Btn variant="ghost" size="sm" onClick={clearSavedDraft}>Clear Draft</Btn></div></div></Card>}
+            {templateImportOpen && (
+        <MpoTemplateImportModal
+          vendors={activeOnly(vendors)}
+          clients={activeOnly(clients)}
+          campaigns={activeOnly(campaigns)}
+          mpos={mpos}
+          user={user}
+          appSettings={appSettings}
+          onImport={importTemplateDrafts}
+          onClose={() => setTemplateImportOpen(false)}
+        />
+      )}
+{hasSavedDraft && <Card style={{ marginBottom: 14, padding: "14px 18px", background: "rgba(59,126,245,.08)", border: "1px solid rgba(59,126,245,.22)" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}><div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>Saved MPO draft found</div><div style={{ fontSize: 12, color: "var(--text2)", marginTop: 3 }}>Your last in-progress MPO was autosaved locally. You can resume it or clear it.</div></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Btn variant="blue" size="sm" onClick={resumeSavedDraft}>Resume Draft</Btn><Btn variant="ghost" size="sm" onClick={clearSavedDraft}>Clear Draft</Btn></div></div></Card>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 14 }}>
         <Stat icon="⏳" label="My Queue" value={workflowStats.myQueue} sub="MPOs currently waiting on your role" color="var(--blue)" />
         <Stat icon="🧾" label="Pending Review" value={workflowStats.pendingReview} sub="Submitted and reviewed MPOs in the approval lane" color="var(--purple)" />
@@ -5741,11 +6333,11 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
                 📅 Select Airing Dates — <span style={{ color: "var(--accent)" }}>{(spotForm.calendarDays||[]).length} day{(spotForm.calendarDays||[]).length !== 1 ? "s" : ""} selected</span>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { updS("calendarDays")(Array.from({length:31},(_,i)=>i+1)); updS("spots")("31"); }} style={{ padding: "3px 10px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--border2)", borderRadius: 6, color: "var(--text2)", cursor: "pointer" }}>All</button>
-                <button onClick={() => { updS("calendarDays")([]); updS("spots")(""); }} style={{ padding: "3px 10px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--border2)", borderRadius: 6, color: "var(--text2)", cursor: "pointer" }}>Clear</button>
+                <button onClick={() => { updS("calendarDays")(Array.from({length:31},(_,i)=>i+1)); updS("spots")("31"); }} style={{ padding: "3px 10px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--border2)", borderRadius: 5, color: "var(--text2)", cursor: "pointer" }}>All</button>
+                <button onClick={() => { updS("calendarDays")([]); updS("spots")(""); }} style={{ padding: "3px 10px", fontSize: 11, background: "var(--bg3)", border: "1px solid var(--border2)", borderRadius: 5, color: "var(--text2)", cursor: "pointer" }}>Clear</button>
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 4 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(11, minmax(0, 1fr))", gap: 3 }}>
               {Array.from({length: 31}, (_, i) => i + 1).map(d => {
                 const sel = (spotForm.calendarDays || []).includes(d);
                 return (
@@ -5755,7 +6347,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
                     updS("calendarDays")(next);
                     updS("spots")(String(next.length));
                   }}
-                  style={{ padding: "6px 2px", border: `1px solid ${sel ? "var(--accent)" : "var(--border2)"}`, borderRadius: 6, background: sel ? "rgba(240,165,0,.18)" : "var(--bg3)", color: sel ? "var(--accent)" : "var(--text3)", fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 12, cursor: "pointer", transition: "all .1s" }}>
+                  style={{ padding: "4px 1px", border: `1px solid ${sel ? "var(--accent)" : "var(--border2)"}`, borderRadius: 5, background: sel ? "rgba(240,165,0,.18)" : "var(--bg3)", color: sel ? "var(--accent)" : "var(--text3)", fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 10, cursor: "pointer", transition: "all .1s", minHeight: 24 }}>
                     {d}
                   </button>
                 );
@@ -5935,20 +6527,20 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
             {spots.length === 0 ? <Empty icon="📋" title="No spots added" sub="Use Daily Schedule or Single Row to add spots" /> :
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr style={{ background: "var(--bg3)" }}>{["Month","Programme","WD","Time Belt","Material","Dur","Rate/Spot","Spots","Gross",""].map(h => <th key={h} style={{ padding: "8px 11px", textAlign: "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+                  <thead><tr style={{ background: "var(--bg3)" }}>{["Month","Programme","WD","Time Belt","Material","Dur","Rate/Spot","Spots","Gross",""].map(h => <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontSize: 9, fontWeight: 600, textTransform: "uppercase", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
                   <tbody>
                     {spots.map((r, i) => (
                       <tr key={r.id} style={{ borderBottom: "1px solid var(--border)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
-                        <td style={{ padding: "9px 11px" }}><span style={{ fontSize: 10, background: "rgba(59,126,245,.12)", color: "var(--blue)", padding: "2px 7px", borderRadius: 8, fontWeight: 700, whiteSpace: "nowrap" }}>{r.scheduleMonth || mpoData.month || "—"}</span></td>
-                        <td style={{ padding: "9px 11px", fontWeight: 600 }}>{r.programme}</td>
-                        <td style={{ padding: "9px 11px" }}><Badge color="blue">{r.wd}</Badge></td>
-                        <td style={{ padding: "9px 11px", color: "var(--text2)" }}>{r.timeBelt}</td>
-                        <td style={{ padding: "9px 11px", color: "var(--text2)", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.material}</td>
-                        <td style={{ padding: "9px 11px" }}>{r.duration}"</td>
-                        <td style={{ padding: "9px 11px", color: "var(--accent)" }}>{fmtN(r.ratePerSpot)}</td>
-                        <td style={{ padding: "9px 11px", fontWeight: 700 }}>{r.spots}</td>
-                        <td style={{ padding: "9px 11px", color: "var(--green)", fontWeight: 600 }}>{fmtN((parseFloat(r.spots) || 0) * (parseFloat(r.ratePerSpot) || 0))}</td>
-                        <td style={{ padding: "9px 11px" }}>
+                        <td style={{ padding: "8px 10px" }}><span style={{ fontSize: 9, background: "rgba(59,126,245,.12)", color: "var(--blue)", padding: "2px 6px", borderRadius: 8, fontWeight: 700, whiteSpace: "nowrap" }}>{r.scheduleMonth || mpoData.month || "—"}</span></td>
+                        <td style={{ padding: "8px 10px", fontWeight: 600, fontSize: 12, lineHeight: 1.3 }}>{r.programme}</td>
+                        <td style={{ padding: "8px 10px", fontSize: 11 }}><Badge color="blue">{r.wd}</Badge></td>
+                        <td style={{ padding: "8px 10px", color: "var(--text2)", fontSize: 12, lineHeight: 1.35 }}>{r.timeBelt}</td>
+                        <td style={{ padding: "8px 10px", color: "var(--text2)", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{r.material}</td>
+                        <td style={{ padding: "8px 10px", fontSize: 12 }}>{r.duration}"</td>
+                        <td style={{ padding: "8px 10px", color: "var(--accent)", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>{fmtN(r.ratePerSpot)}</td>
+                        <td style={{ padding: "8px 10px", fontWeight: 700, fontSize: 12 }}>{r.spots}</td>
+                        <td style={{ padding: "8px 10px", color: "var(--green)", fontWeight: 600, fontSize: 12, whiteSpace: "nowrap" }}>{fmtN((parseFloat(r.spots) || 0) * (parseFloat(r.ratePerSpot) || 0))}</td>
+                        <td style={{ padding: "8px 10px" }}>
                           <div style={{ display: "flex", gap: 5 }}>
                             {canManage && <Btn variant="ghost" size="sm" onClick={() => { setSpotForm({ programme: r.programme, wd: r.wd, timeBelt: r.timeBelt, material: r.material, duration: r.duration, rateId: r.rateId||"", customRate: r.ratePerSpot||"", spots: r.spots, calendarDays: r.calendarDays||[] }); setEditSpotId(r.id); setSpotModal(true); }}>✏️</Btn>}
                             <Btn variant="danger" size="sm" onClick={() => setSpots(s => s.filter(x => x.id !== r.id))}>×</Btn>
@@ -5957,7 +6549,7 @@ const MPOPage = ({ vendors, clients, campaigns, rates, mpos, setMpos, user, appS
                       </tr>
                     ))}
                   </tbody>
-                  <tfoot><tr style={{ background: "var(--bg3)", borderTop: "2px solid var(--border2)" }}><td colSpan={7} style={{ padding: "9px 11px", fontFamily: "'Syne',sans-serif", fontWeight: 700 }}>TOTAL</td><td style={{ padding: "9px 11px", fontWeight: 700, color: "var(--blue)" }}>{totalSpots}</td><td style={{ padding: "9px 11px", fontWeight: 700, color: "var(--green)" }}>{fmtN(totalGross)}</td><td></td></tr></tfoot>
+                  <tfoot><tr style={{ background: "var(--bg3)", borderTop: "2px solid var(--border2)" }}><td colSpan={7} style={{ padding: "8px 10px", fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 12 }}>TOTAL</td><td style={{ padding: "8px 10px", fontWeight: 700, color: "var(--blue)", fontSize: 12 }}>{totalSpots}</td><td style={{ padding: "8px 10px", fontWeight: 700, color: "var(--green)", fontSize: 12, whiteSpace: "nowrap" }}>{fmtN(totalGross)}</td><td></td></tr></tfoot>
                 </table>
               </div>}
           </Card>
@@ -8698,6 +9290,7 @@ export default function App() {
   const [page, setPage] = useState("dashboard");
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useState(() => getDefaultTheme());
+  const [authResetMode, setAuthResetMode] = useState(() => new URLSearchParams(window.location.search).get("reset_password") === "1" || window.location.hash.includes("type=recovery"));
   const [appSettings, _setAppSettings] = useState(() => getAppSettings());
   useEffect(() => {
     setTheme(getDefaultTheme(user?.id || null));
@@ -8755,8 +9348,9 @@ export default function App() {
 
     bootstrapAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
+      if (event === "PASSWORD_RECOVERY") setAuthResetMode(true);
       setAuthUser(session?.user || null);
       setAuthReady(true);
       clearTimeout(timeout);
@@ -9266,11 +9860,22 @@ if (!authReady) {
   );
 }
 
-if (!user) {
+const handleAuthResetHandled = () => {
+  setAuthResetMode(false);
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("reset_password");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch (e) {
+    console.error("Failed to clear reset password flag:", e);
+  }
+};
+
+if (!user || authResetMode) {
   return (
     <>
       <GlobalStyle theme={theme} />
-      <AuthPage onLogin={handleLogin} />
+      <AuthPage onLogin={handleLogin} resetMode={authResetMode} onResetHandled={handleAuthResetHandled} />
     </>
   );
 }
