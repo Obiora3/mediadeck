@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./lib/supabase";
-import Badge from "./components/badge";
+import Badge from "./components/Badge";
 import Empty from "./components/Empty";
 import Toast from "./components/Toast";
 import Modal from "./components/Modal";
