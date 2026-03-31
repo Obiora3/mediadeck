@@ -1,0 +1,15 @@
+{
+  "name": "mpo-pdf-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cor": "^0.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.22.1",
+    "puppeteer": "^24.40.0"
+  }
+}
