@@ -1,4 +1,36 @@
-import puppeteer from "puppeteer";
+import fs from "fs";
+import puppeteer from "puppeteer-core";
+import chromium from "@sparticuz/chromium-min";
+
+const findLocalChrome = () => {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.PUPPETEER_BROWSER_PATH,
+    process.env.USERPROFILE
+      ? `${process.env.USERPROFILE}\\.cache\\puppeteer\\chrome\\win64-146.0.7680.153\\chrome-win64\\chrome.exe`
+      : "",
+    process.env.LOCALAPPDATA
+      ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
+      : "",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean);
+
+  return candidates.find((filePath) => fs.existsSync(filePath)) || null;
+};
+
+const getExecutablePath = async () => {
+  if (process.env.VERCEL) {
+    return await chromium.executablePath();
+  }
+
+  const localChrome = findLocalChrome();
+  if (localChrome) return localChrome;
+
+  throw new Error(
+    "Chrome executable not found locally. Set PUPPETEER_EXECUTABLE_PATH or install Chrome for Puppeteer."
+  );
+};
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -25,22 +57,50 @@ export default async function handler(req, res) {
   let browser;
 
   try {
+    const executablePath = await getExecutablePath();
+
     browser = await puppeteer.launch({
+      executablePath,
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: process.env.VERCEL ? chromium.args : [],
+      defaultViewport: {
+        width: 900,
+        height: 1400,
+        deviceScaleFactor: 1,
+      },
     });
 
     const page = await browser.newPage();
 
-    await page.setViewport({
-      width: 900,
-      height: 1400,
-      deviceScaleFactor: 1,
+    // Avoid hanging forever on slow/external assets.
+    page.setDefaultNavigationTimeout(0);
+    page.setDefaultTimeout(0);
+
+    // Stop external requests from blocking PDF generation.
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const url = request.url();
+
+      const allowed =
+        url.startsWith("data:") ||
+        url.startsWith("blob:") ||
+        url.startsWith("file:") ||
+        url.startsWith("about:blank");
+
+      if (allowed) {
+        request.continue();
+        return;
+      }
+
+      // Abort external network requests so setContent doesn't hang.
+      request.abort();
     });
 
     await page.emulateMediaType("screen");
+
     await page.setContent(html, {
-      waitUntil: ["domcontentloaded", "networkidle0"],
+      waitUntil: "domcontentloaded",
+      timeout: 0,
     });
 
     await page.evaluate(async () => {
@@ -49,34 +109,35 @@ export default async function handler(req, res) {
           await document.fonts.ready;
         }
       } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
     });
 
     const dimensions = await page.evaluate(() => {
       const body = document.body;
       const root = document.documentElement;
 
-      const width = Math.max(
-        body.scrollWidth,
-        body.offsetWidth,
-        body.clientWidth,
-        root.scrollWidth,
-        root.offsetWidth,
-        root.clientWidth
-      );
-
-      const height = Math.max(
-        body.scrollHeight,
-        body.offsetHeight,
-        body.clientHeight,
-        root.scrollHeight,
-        root.offsetHeight,
-        root.clientHeight
-      );
-
       return {
-        width: Math.ceil(width),
-        height: Math.ceil(height),
+        width: Math.ceil(
+          Math.max(
+            body.scrollWidth,
+            body.offsetWidth,
+            body.clientWidth,
+            root.scrollWidth,
+            root.offsetWidth,
+            root.clientWidth
+          )
+        ),
+        height: Math.ceil(
+          Math.max(
+            body.scrollHeight,
+            body.offsetHeight,
+            body.clientHeight,
+            root.scrollHeight,
+            root.offsetHeight,
+            root.clientHeight
+          )
+        ),
       };
     });
 
