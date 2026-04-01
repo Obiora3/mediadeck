@@ -1,4 +1,5 @@
 import fs from "fs";
+import crypto from "crypto";
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
 
@@ -6,8 +7,10 @@ const isVercel = !!process.env.VERCEL;
 
 let executablePathPromise = null;
 let browserPromise = null;
+
 const pdfCache = new Map();
 const PDF_CACHE_TTL = 5 * 60 * 1000;
+const PDF_CACHE_MAX_ITEMS = 20;
 
 const findLocalChrome = () => {
   const candidates = [
@@ -66,18 +69,45 @@ const getBrowser = async () => {
   return browserPromise;
 };
 
-const makeCacheKey = (html, title) => `${title || "MPO"}::${html.length}::${html}`;
+const safeTitleFrom = (title) =>
+  String(title || "MPO")
+    .replace(/[^a-z0-9\-_. ]/gi, "_")
+    .slice(0, 80);
+
+const makeCacheKey = (html, title) =>
+  crypto.createHash("sha1").update(`${title || "MPO"}::${html}`).digest("hex");
+
+const pruneCache = () => {
+  const now = Date.now();
+
+  for (const [key, entry] of pdfCache.entries()) {
+    if (now - entry.createdAt > PDF_CACHE_TTL) {
+      pdfCache.delete(key);
+    }
+  }
+
+  if (pdfCache.size <= PDF_CACHE_MAX_ITEMS) return;
+
+  const entries = Array.from(pdfCache.entries()).sort(
+    (a, b) => a[1].createdAt - b[1].createdAt
+  );
+
+  while (entries.length > PDF_CACHE_MAX_ITEMS) {
+    const [oldestKey] = entries.shift();
+    pdfCache.delete(oldestKey);
+  }
+};
 
 const getCachedPdf = (cacheKey) => {
-  const cached = pdfCache.get(cacheKey);
-  if (!cached) return null;
+  const entry = pdfCache.get(cacheKey);
+  if (!entry) return null;
 
-  if (Date.now() - cached.createdAt > PDF_CACHE_TTL) {
+  if (Date.now() - entry.createdAt > PDF_CACHE_TTL) {
     pdfCache.delete(cacheKey);
     return null;
   }
 
-  return cached.buffer;
+  return entry.buffer;
 };
 
 export default async function handler(req, res) {
@@ -102,10 +132,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing HTML payload." });
   }
 
-  const safeTitle = String(title || "MPO")
-    .replace(/[^a-z0-9\-_. ]/gi, "_")
-    .slice(0, 80);
-
+  const safeTitle = safeTitleFrom(title);
   const cacheKey = makeCacheKey(html, title);
   const cachedPdf = getCachedPdf(cacheKey);
 
@@ -130,6 +157,7 @@ export default async function handler(req, res) {
     await page.setRequestInterception(true);
     page.on("request", (request) => {
       const url = request.url();
+
       const allowed =
         url.startsWith("data:") ||
         url.startsWith("blob:") ||
@@ -158,7 +186,7 @@ export default async function handler(req, res) {
         }
       } catch {}
 
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
     const dimensions = await page.evaluate(() => {
@@ -210,6 +238,7 @@ export default async function handler(req, res) {
       buffer: pdfBuffer,
       createdAt: Date.now(),
     });
+    pruneCache();
 
     res.status(200);
     res.setHeader("Cache-Control", "no-store");
