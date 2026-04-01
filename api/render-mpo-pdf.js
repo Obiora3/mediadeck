@@ -2,6 +2,11 @@ import fs from "fs";
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
 
+const isVercel = !!process.env.VERCEL;
+
+// Cache the resolved executable path across invocations in the same runtime.
+let executablePathPromise;
+
 const findLocalChrome = () => {
   const candidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -20,16 +25,22 @@ const findLocalChrome = () => {
 };
 
 const getExecutablePath = async () => {
-  if (process.env.VERCEL) {
-    return await chromium.executablePath();
+  if (!executablePathPromise) {
+    executablePathPromise = (async () => {
+      if (isVercel) {
+        return await chromium.executablePath();
+      }
+
+      const localChrome = findLocalChrome();
+      if (localChrome) return localChrome;
+
+      throw new Error(
+        "Chrome executable not found locally. Set PUPPETEER_EXECUTABLE_PATH or install Chrome for Puppeteer."
+      );
+    })();
   }
 
-  const localChrome = findLocalChrome();
-  if (localChrome) return localChrome;
-
-  throw new Error(
-    "Chrome executable not found locally. Set PUPPETEER_EXECUTABLE_PATH or install Chrome for Puppeteer."
-  );
+  return executablePathPromise;
 };
 
 export default async function handler(req, res) {
@@ -62,7 +73,7 @@ export default async function handler(req, res) {
     browser = await puppeteer.launch({
       executablePath,
       headless: true,
-      args: process.env.VERCEL ? chromium.args : [],
+      args: isVercel ? chromium.args : [],
       defaultViewport: {
         width: 900,
         height: 1400,
