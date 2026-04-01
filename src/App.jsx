@@ -96,6 +96,7 @@ import {
   getReceivablesSyncMeta,
   getDaysPastDue,
   normalizeReceivableRecord,
+  normalizePaymentEntry,
   getStoredReceivables,
   setStoredReceivables,
   fetchReceivablesFromSupabase,
@@ -114,6 +115,10 @@ const store = {
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const looksLikeUuid = (value = "") =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "").trim()
+  );
 const APP_VERSION = "2.3";
 const getAppSettings = () => mergeAppSettings(store.get("msp_app_settings", {}));
 const roundMoneyValue = (value, settings = getAppSettings()) => {
@@ -270,23 +275,16 @@ export default function App() {
       }
 
       try {
-        await ensureAgencyForUser(authUser);
+        const agencyId = await ensureAgencyForUser(authUser);
         const appUser = await loadAppUserFromSupabase(authUser);
-        if (active) setUser(appUser);
+
+        if (active) {
+          setUser(appUser ? { ...appUser, agencyId: appUser.agencyId || agencyId || null } : null);
+        }
       } catch (e) {
         console.error("Failed to load user:", e);
         if (active) {
-          setUser({
-            id: authUser.id,
-            name: authUser.user_metadata?.full_name || authUser.email || "User",
-            email: authUser.email || "",
-            title: authUser.user_metadata?.title || "",
-            phone: authUser.user_metadata?.phone || "",
-            agency: authUser.user_metadata?.agency_name || "My Agency",
-            agencyId: null,
-            agencyCode: authUser.user_metadata?.agency_code || "",
-            role: "admin",
-          });
+          setUser(null);
         }
       }
     };
@@ -366,7 +364,7 @@ export default function App() {
     let active = true;
     const loadVendors = async () => {
       try {
-        const rows = await fetchVendorsFromSupabase();
+        const rows = await fetchVendorsFromSupabase(user.agencyId);
         if (active) setVendors(rows);
       } catch (e) {
         console.error("Failed to load vendors:", e);
@@ -386,7 +384,7 @@ export default function App() {
     let active = true;
     const loadClients = async () => {
       try {
-        const rows = await fetchClientsFromSupabase();
+        const rows = await fetchClientsFromSupabase(user.agencyId);
         if (active) setClients(rows);
       } catch (e) {
         console.error("Failed to load clients:", e);
@@ -406,7 +404,7 @@ export default function App() {
     let active = true;
     const loadCampaigns = async () => {
       try {
-        const rows = await fetchCampaignsFromSupabase();
+        const rows = await fetchCampaignsFromSupabase(user.agencyId);
         if (active) setCampaigns(rows);
       } catch (e) {
         console.error("Failed to load campaigns:", e);
@@ -426,7 +424,7 @@ export default function App() {
     let active = true;
     const loadRates = async () => {
       try {
-        const rows = await fetchRatesFromSupabase();
+        const rows = await fetchRatesFromSupabase(user.agencyId);
         if (active) setRates(rows);
       } catch (e) {
         console.error("Failed to load rates:", e);
@@ -446,7 +444,7 @@ export default function App() {
     let active = true;
     const loadMpos = async () => {
       try {
-        const rows = await fetchMposFromSupabase();
+        const rows = await fetchMposFromSupabase(user.agencyId);
         if (active) setMpos(rows);
       } catch (e) {
         console.error("Failed to load MPOs:", e);
@@ -467,7 +465,7 @@ export default function App() {
     let active = true;
     const loadReceivables = async () => {
       try {
-        const rows = await fetchReceivablesFromSupabase();
+        const rows = await fetchReceivablesFromSupabase(user.agencyId);
         if (!active) return;
         setReceivables(rows);
         setReceivablesSync(getReceivablesSyncMeta("supabase"));
@@ -494,33 +492,37 @@ export default function App() {
     const refreshUser = async () => {
       if (!authUser?.id) return;
       try {
+        const agencyId = await ensureAgencyForUser(authUser);
         const refreshed = await loadAppUserFromSupabase(authUser);
-        setUser(prev => prev ? { ...prev, ...refreshed } : refreshed);
+        setUser(prev => {
+          const next = refreshed ? { ...(prev || {}), ...refreshed, agencyId: refreshed.agencyId || agencyId || prev?.agencyId || null } : prev;
+          return next || null;
+        });
       } catch (error) {
         console.error("Failed to refresh user:", error);
       }
     };
     const refreshVendors = async () => {
-      try { setVendors(await fetchVendorsFromSupabase()); } catch (error) { console.error("Realtime vendors refresh failed:", error); }
+      try { setVendors(await fetchVendorsFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime vendors refresh failed:", error); }
     };
     const refreshClients = async () => {
-      try { setClients(await fetchClientsFromSupabase()); } catch (error) { console.error("Realtime clients refresh failed:", error); }
+      try { setClients(await fetchClientsFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime clients refresh failed:", error); }
     };
     const refreshCampaigns = async () => {
-      try { setCampaigns(await fetchCampaignsFromSupabase()); } catch (error) { console.error("Realtime campaigns refresh failed:", error); }
+      try { setCampaigns(await fetchCampaignsFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime campaigns refresh failed:", error); }
     };
     const refreshRates = async () => {
-      try { setRates(await fetchRatesFromSupabase()); } catch (error) { console.error("Realtime rates refresh failed:", error); }
+      try { setRates(await fetchRatesFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime rates refresh failed:", error); }
     };
     const refreshMpos = async () => {
-      try { setMpos(await fetchMposFromSupabase()); } catch (error) { console.error("Realtime MPO refresh failed:", error); }
+      try { setMpos(await fetchMposFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime MPO refresh failed:", error); }
     };
     const refreshMembers = async () => {
       try { setMembers(await fetchAgencyMembersFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime members refresh failed:", error); }
     };
     const refreshReceivables = async () => {
       try {
-        const rows = await fetchReceivablesFromSupabase();
+        const rows = await fetchReceivablesFromSupabase(user.agencyId);
         setReceivables(rows);
         setReceivablesSync(getReceivablesSyncMeta("supabase"));
       } catch (error) {
