@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from "react";
 
 const getRenderPdfEndpoint = () => {
@@ -16,9 +17,20 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
   const [pdfError, setPdfError] = useState("");
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfBlob, setPdfBlob] = useState(null);
-  const iframeRef = useRef(null);
+
+  const htmlFrameRef = useRef(null);
+  const pdfPrintFrameRef = useRef(null);
+  const prefetchTimerRef = useRef(null);
+  const inFlightPdfRef = useRef(null);
 
   const safeName = (t) => (t || "MPO").replace(/[^a-z0-9\-_. ]/gi, "_").slice(0, 80);
+
+  const clearPrefetchTimer = () => {
+    if (prefetchTimerRef.current) {
+      clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
+    }
+  };
 
   const revokePdfUrl = () => {
     setPdfUrl((current) => {
@@ -76,60 +88,89 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
       return { blob: pdfBlob, url: pdfUrl };
     }
 
+    if (inFlightPdfRef.current) {
+      return inFlightPdfRef.current;
+    }
+
     setPdfBusy(true);
     setPdfError("");
 
-    try {
-      const blob = await fetchPdfBlob();
-      revokePdfUrl();
-      const url = URL.createObjectURL(blob);
-      setPdfBlob(blob);
-      setPdfUrl(url);
-      return { blob, url };
-    } catch (error) {
-      const rawMessage = error?.message || "Failed to generate PDF preview.";
-      const message =
-        rawMessage.includes("Failed to fetch")
-          ? "PDF API is not reachable. Deploy api/render-mpo-pdf.js or set VITE_PDF_API_BASE_URL."
-          : rawMessage;
+    const request = (async () => {
+      try {
+        const blob = await fetchPdfBlob();
+        revokePdfUrl();
+        const url = URL.createObjectURL(blob);
+        setPdfBlob(blob);
+        setPdfUrl(url);
+        return { blob, url };
+      } catch (error) {
+        const rawMessage = error?.message || "Failed to generate PDF preview.";
+        const message =
+          rawMessage.includes("Failed to fetch")
+            ? "PDF API is not reachable. Deploy api/render-mpo-pdf.js or set VITE_PDF_API_BASE_URL."
+            : rawMessage;
 
-      setPdfError(message);
-      throw new Error(message);
-    } finally {
-      setPdfBusy(false);
-    }
+        setPdfError(message);
+        throw new Error(message);
+      } finally {
+        setPdfBusy(false);
+        inFlightPdfRef.current = null;
+      }
+    })();
+
+    inFlightPdfRef.current = request;
+    return request;
   };
 
   useEffect(() => {
     setPdfBlob(null);
     setPdfError("");
+    inFlightPdfRef.current = null;
+    clearPrefetchTimer();
     revokePdfUrl();
 
-    if (tab === "preview") {
-      ensurePdfReady().catch(() => {});
-    }
-
     return () => {
+      clearPrefetchTimer();
+      inFlightPdfRef.current = null;
       revokePdfUrl();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html, title]);
 
   useEffect(() => {
-    if (tab === "preview" && !pdfUrl && !pdfBusy) {
+    clearPrefetchTimer();
+
+    if (tab !== "preview" || pdfBlob || pdfUrl) return;
+
+    // Let the HTML preview appear first, then quietly prepare the PDF.
+    prefetchTimerRef.current = setTimeout(() => {
       ensurePdfReady().catch(() => {});
-    }
+    }, 1200);
+
+    return () => {
+      clearPrefetchTimer();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [tab, html, title, pdfBlob, pdfUrl]);
 
   const handlePrint = async () => {
     try {
       const { url } = await ensurePdfReady();
-      const printFrame = iframeRef.current;
 
-      if (printFrame?.contentWindow) {
-        printFrame.contentWindow.focus();
-        printFrame.contentWindow.print();
+      const frame = pdfPrintFrameRef.current;
+      if (frame) {
+        frame.onload = () => {
+          setTimeout(() => {
+            try {
+              frame.contentWindow?.focus();
+              frame.contentWindow?.print();
+            } catch (error) {
+              console.error("PDF iframe print failed:", error);
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
+          }, 150);
+        };
+        frame.src = url;
         return;
       }
 
@@ -153,6 +194,15 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
     } catch (error) {
       console.error("Server PDF download failed:", error);
       alert(`PDF download failed: ${error.message}`);
+    }
+  };
+
+  const handleOpenPdfPreview = async () => {
+    try {
+      const { url } = await ensurePdfReady();
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error("Open PDF preview failed:", error);
     }
   };
 
@@ -264,7 +314,7 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
             border: "1px solid rgba(255,255,255,.1)",
           }}
         >
-          {[["preview", "📄 Preview / Print"], ["csv", "📊 CSV / Excel"]].map(([t, l]) => (
+          {[["preview", "📄 Preview"], ["csv", "📊 CSV / Excel"]].map(([t, l]) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -300,7 +350,7 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
 
             <button
               onClick={handlePrint}
-              disabled={pdfBusy || !pdfUrl}
+              disabled={pdfBusy}
               style={{
                 ...btnStyle("#0A1F44", "#D4870A", "#D4870A"),
                 opacity: pdfBusy ? 0.65 : 1,
@@ -308,6 +358,18 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
               }}
             >
               🖨 Print
+            </button>
+
+            <button
+              onClick={handleOpenPdfPreview}
+              disabled={pdfBusy}
+              style={{
+                ...btnStyle("rgba(59,130,246,.15)", "#60a5fa", "rgba(59,130,246,.35)"),
+                opacity: pdfBusy ? 0.65 : 1,
+                cursor: pdfBusy ? "wait" : "pointer",
+              }}
+            >
+              {pdfBusy ? "⏳ Preparing..." : "👁 Open PDF"}
             </button>
 
             <button
@@ -358,88 +420,64 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
             display: "flex",
             justifyContent: "center",
             padding: 24,
+            position: "relative",
           }}
         >
-          {pdfBusy && !pdfUrl ? (
+          <iframe
+            ref={htmlFrameRef}
+            srcDoc={html}
+            style={{
+              width: "100%",
+              maxWidth: 980,
+              height: "calc(100vh - 150px)",
+              border: "none",
+              boxShadow: "0 8px 40px rgba(0,0,0,.5)",
+              background: "#fff",
+            }}
+            title="MPO HTML Preview"
+          />
+
+          {pdfBusy ? (
             <div
               style={{
-                width: "100%",
-                maxWidth: 900,
-                minHeight: 700,
-                background: "#fff",
-                boxShadow: "0 8px 40px rgba(0,0,0,.5)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontFamily: "'Syne',sans-serif",
-                fontWeight: 700,
-                color: "#1f2937",
+                position: "absolute",
+                right: 32,
+                bottom: pdfError ? 126 : 32,
+                background: "rgba(14,17,24,.92)",
+                color: "#f8fafc",
+                border: "1px solid rgba(255,255,255,.08)",
+                borderRadius: 12,
+                padding: "10px 12px",
+                boxShadow: "0 8px 30px rgba(0,0,0,.22)",
+                fontSize: 13,
+                lineHeight: 1.35,
               }}
             >
-              Building preview PDF...
+              Preparing PDF in background...
             </div>
-          ) : pdfError ? (
+          ) : null}
+
+          {pdfError ? (
             <div
               style={{
-                width: "100%",
-                maxWidth: 900,
-                minHeight: 700,
-                background: "#fff",
-                boxShadow: "0 8px 40px rgba(0,0,0,.5)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 24,
-                textAlign: "center",
+                position: "absolute",
+                right: 32,
+                bottom: 32,
+                maxWidth: 420,
+                background: "#fff7f7",
+                border: "1px solid rgba(239,68,68,.3)",
                 color: "#7f1d1d",
-                gap: 12,
+                borderRadius: 12,
+                padding: "12px 14px",
+                boxShadow: "0 8px 30px rgba(0,0,0,.22)",
+                fontSize: 13,
+                lineHeight: 1.45,
               }}
             >
-              <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 18 }}>
-                Could not load PDF preview
-              </div>
-              <div style={{ maxWidth: 520, fontSize: 14 }}>{pdfError}</div>
-              <button
-                onClick={() => ensurePdfReady().catch(() => {})}
-                style={btnStyle("rgba(34,197,94,.15)", "#22c55e", "rgba(34,197,94,.35)")}
-              >
-                Retry
-              </button>
+              <div style={{ fontWeight: 800, marginBottom: 4 }}>PDF generation error</div>
+              <div>{pdfError}</div>
             </div>
-          ) : pdfUrl ? (
-            <iframe
-              ref={iframeRef}
-              src={pdfUrl}
-              style={{
-                width: "100%",
-                maxWidth: 980,
-                height: "calc(100vh - 150px)",
-                border: "none",
-                boxShadow: "0 8px 40px rgba(0,0,0,.5)",
-                background: "#fff",
-              }}
-              title="MPO PDF Preview"
-            />
-          ) : (
-            <div
-              style={{
-                width: "100%",
-                maxWidth: 900,
-                minHeight: 700,
-                background: "#fff",
-                boxShadow: "0 8px 40px rgba(0,0,0,.5)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontFamily: "'Syne',sans-serif",
-                fontWeight: 700,
-                color: "#1f2937",
-              }}
-            >
-              Preparing preview...
-            </div>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -488,6 +526,12 @@ const PrintPreview = ({ html, csv, title, onClose }) => {
           />
         </div>
       )}
+
+      <iframe
+        ref={pdfPrintFrameRef}
+        title="Hidden PDF Print Frame"
+        style={{ display: "none" }}
+      />
     </div>
   );
 };
