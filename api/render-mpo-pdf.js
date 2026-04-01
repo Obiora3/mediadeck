@@ -6,7 +6,17 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed." });
   }
 
-  const { html, title } = req.body || {};
+  let payload = req.body || {};
+
+  if (typeof payload === "string") {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      return res.status(400).json({ error: "Invalid JSON payload." });
+    }
+  }
+
+  const { html, title } = payload;
 
   if (!html || typeof html !== "string") {
     return res.status(400).json({ error: "Missing HTML payload." });
@@ -22,7 +32,6 @@ export default async function handler(req, res) {
 
     const page = await browser.newPage();
 
-    // Match the on-screen preview conditions as closely as possible.
     await page.setViewport({
       width: 900,
       height: 1400,
@@ -34,7 +43,6 @@ export default async function handler(req, res) {
       waitUntil: ["domcontentloaded", "networkidle0"],
     });
 
-    // Wait for fonts/images/layout to settle before measuring.
     await page.evaluate(async () => {
       try {
         if (document.fonts && document.fonts.ready) {
@@ -94,8 +102,9 @@ export default async function handler(req, res) {
       .slice(0, 80);
 
     res.status(200);
+    res.setHeader("Cache-Control", "no-store");
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.pdf"`);
+    res.setHeader("Content-Disposition", `inline; filename="${safeTitle}.pdf"`);
     res.setHeader("Content-Length", String(pdfBuffer.length));
     return res.end(pdfBuffer);
   } catch (error) {
