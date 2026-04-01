@@ -4,8 +4,10 @@ import chromium from "@sparticuz/chromium";
 
 const isVercel = !!process.env.VERCEL;
 
-// Cache the resolved executable path across invocations in the same runtime.
-let executablePathPromise;
+let executablePathPromise = null;
+let browserPromise = null;
+const pdfCache = new Map();
+const PDF_CACHE_TTL = 5 * 60 * 1000;
 
 const findLocalChrome = () => {
   const candidates = [
@@ -43,6 +45,41 @@ const getExecutablePath = async () => {
   return executablePathPromise;
 };
 
+const getBrowser = async () => {
+  if (!browserPromise) {
+    browserPromise = (async () => {
+      const executablePath = await getExecutablePath();
+
+      return puppeteer.launch({
+        executablePath,
+        headless: true,
+        args: isVercel ? chromium.args : [],
+        defaultViewport: {
+          width: 900,
+          height: 1400,
+          deviceScaleFactor: 1,
+        },
+      });
+    })();
+  }
+
+  return browserPromise;
+};
+
+const makeCacheKey = (html, title) => `${title || "MPO"}::${html.length}::${html}`;
+
+const getCachedPdf = (cacheKey) => {
+  const cached = pdfCache.get(cacheKey);
+  if (!cached) return null;
+
+  if (Date.now() - cached.createdAt > PDF_CACHE_TTL) {
+    pdfCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.buffer;
+};
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -65,23 +102,27 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing HTML payload." });
   }
 
-  let browser;
+  const safeTitle = String(title || "MPO")
+    .replace(/[^a-z0-9\-_. ]/gi, "_")
+    .slice(0, 80);
+
+  const cacheKey = makeCacheKey(html, title);
+  const cachedPdf = getCachedPdf(cacheKey);
+
+  if (cachedPdf) {
+    res.status(200);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${safeTitle}.pdf"`);
+    res.setHeader("Content-Length", String(cachedPdf.length));
+    return res.end(cachedPdf);
+  }
+
+  let page;
 
   try {
-    const executablePath = await getExecutablePath();
-
-    browser = await puppeteer.launch({
-      executablePath,
-      headless: true,
-      args: isVercel ? chromium.args : [],
-      defaultViewport: {
-        width: 900,
-        height: 1400,
-        deviceScaleFactor: 1,
-      },
-    });
-
-    const page = await browser.newPage();
+    const browser = await getBrowser();
+    page = await browser.newPage();
 
     page.setDefaultNavigationTimeout(0);
     page.setDefaultTimeout(0);
@@ -165,9 +206,10 @@ export default async function handler(req, res) {
       pageRanges: "1",
     });
 
-    const safeTitle = String(title || "MPO")
-      .replace(/[^a-z0-9\-_. ]/gi, "_")
-      .slice(0, 80);
+    pdfCache.set(cacheKey, {
+      buffer: pdfBuffer,
+      createdAt: Date.now(),
+    });
 
     res.status(200);
     res.setHeader("Cache-Control", "no-store");
@@ -182,8 +224,8 @@ export default async function handler(req, res) {
       details: error.message,
     });
   } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
+    if (page) {
+      await page.close().catch(() => {});
     }
   }
 }
