@@ -1,6 +1,6 @@
 import fs from "fs";
 import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium-min";
+import chromium from "@sparticuz/chromium";
 
 const findLocalChrome = () => {
   const candidates = [
@@ -72,15 +72,12 @@ export default async function handler(req, res) {
 
     const page = await browser.newPage();
 
-    // Avoid hanging forever on slow/external assets.
     page.setDefaultNavigationTimeout(0);
     page.setDefaultTimeout(0);
 
-    // Stop external requests from blocking PDF generation.
     await page.setRequestInterception(true);
     page.on("request", (request) => {
       const url = request.url();
-
       const allowed =
         url.startsWith("data:") ||
         url.startsWith("blob:") ||
@@ -92,7 +89,6 @@ export default async function handler(req, res) {
         return;
       }
 
-      // Abort external network requests so setContent doesn't hang.
       request.abort();
     });
 
