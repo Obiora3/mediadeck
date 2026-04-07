@@ -69,6 +69,21 @@ export const buildCSV = (rows, headers) => {
   return [headers.map(esc).join(","), ...rows.map(r => r.map(esc).join(","))].join("\n");
 };
 
+
+export const formatNairaExportValue = (value) => {
+  if (typeof value === "string" && value.trim().startsWith("₦")) return value;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return value ?? "";
+  return `₦${num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+export const formatExportRowsWithCurrency = (rows, currencyColumns = []) =>
+  (rows || []).map((row) =>
+    (row || []).map((cell, index) =>
+      currencyColumns.includes(index) ? formatNairaExportValue(cell) : cell
+    )
+  );
+
 export const loadBrowserScript = (src, readyCheck) => new Promise((resolve, reject) => {
   try {
     const ready = typeof readyCheck === "function" ? readyCheck() : readyCheck;

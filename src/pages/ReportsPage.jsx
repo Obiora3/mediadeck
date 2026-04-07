@@ -3,6 +3,7 @@ import Empty from "../components/Empty";
 import Toast from "../components/Toast";
 import { Btn, Field, Card } from "../components/ui/primitives";
 import { MPO_STATUS_OPTIONS } from "../constants/mpoWorkflow";
+import { formatNairaExportValue, formatExportRowsWithCurrency } from "../utils/export";
 
 export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, activeOnly, fmtN, MPO_STATUS_LABELS, PrintPreview, buildCSV }) {
   const [toast, setToast] = useState(null);
@@ -340,6 +341,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "See which media owners are taking the largest share of spend and exposure.",
       headers: ["Vendor", "Medium", "MPO Count", "Spots", "Gross Value", "Net Value", "Paid", "Outstanding"],
       rows: spendByVendor.map(row => [row.vendor, row.medium, row.mpoCount, row.spots, row.gross, row.net, row.paid, row.outstanding]),
+      currencyColumns: [4, 5, 6, 7],
     },
     {
       id: "spend-client",
@@ -348,6 +350,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "Track client value, budget coverage, and campaign concentration.",
       headers: ["Client", "Campaigns", "MPO Count", "Budget Pool", "Spend", "Budget Variance"],
       rows: spendByClient.map(row => [row.client, row.campaignCount, row.mpoCount, row.budget, row.spend, row.variance]),
+      currencyColumns: [3, 4, 5],
     },
     {
       id: "campaign-budget",
@@ -356,6 +359,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "Compare campaign budgets against MPO spend and utilization.",
       headers: ["Campaign", "Client", "Brand", "Medium", "Status", "Budget", "Gross Value", "MPO Spend", "Variance", "Utilization %", "MPO Count"],
       rows: campaignBudgetControl.map(row => [row.campaign, row.client, row.brand, row.medium, row.status, row.budget, row.gross, row.spend, row.variance, `${row.utilization.toFixed(1)}%`, row.mpoCount]),
+      currencyColumns: [5, 6, 7, 8],
     },
     {
       id: "finance-tracker",
@@ -364,6 +368,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "Follow invoice, payment, and outstanding exposure on every MPO.",
       headers: ["MPO No.", "Vendor", "Client", "Campaign", "Value", "Invoice Status", "Invoice No.", "Payment Status", "Payment Ref", "Paid At", "Outstanding"],
       rows: financeTracker.map(row => [row.mpoNo, row.vendor, row.client, row.campaign, row.value, row.invoiceStatus, row.invoiceNo, row.paymentStatus, row.paymentReference, row.paidAt, row.outstanding]),
+      currencyColumns: [4, 10],
     },
     {
       id: "reconciliation-control",
@@ -372,6 +377,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "Watch proof of airing, delivery variance, and reconciliation status.",
       headers: ["MPO No.", "Vendor", "Campaign", "Planned Spots", "Aired Spots", "Missed", "Makegood", "Proof Status", "Reconciliation", "Reconciled Amount", "Notes"],
       rows: reconciliationControl.map(row => [row.mpoNo, row.vendor, row.campaign, row.planned, row.aired, row.missed, row.makegood, row.proofStatus, row.reconciliationStatus, row.reconciledAmount, row.notes]),
+      currencyColumns: [9],
     },
     {
       id: "pipeline",
@@ -380,6 +386,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "Measure MPO flow through draft, approval, airing, and closeout.",
       headers: ["Status", "Count", "Value", "Paid Value"],
       rows: statusPipeline.map(row => [row.status, row.count, row.value, row.paid]),
+      currencyColumns: [2, 3],
     },
     {
       id: "rate-snapshot",
@@ -388,6 +395,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "Review effective net rates after discount and commission.",
       headers: ["Vendor", "Programme", "Time Belt", "Medium", "Duration", "Rate/Spot", "Disc %", "Comm %", "Net Rate", "Notes"],
       rows: rateCardSnapshot.map(row => [row.vendor, row.programme, row.timeBelt, row.medium, row.duration, row.rate, `${row.discount}%`, `${row.commission}%`, row.netRate, row.notes]),
+      currencyColumns: [5, 8],
     },
     {
       id: "mpo-register",
@@ -396,6 +404,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       desc: "A clean register of all MPOs matching your filters.",
       headers: ["MPO No.", "Date", "Vendor", "Client", "Brand", "Campaign", "Medium", "Status", "Payment Status", "Reconciliation", "Total Spots", "Gross", "Net", "Grand Total"],
       rows: filteredMpoRegister.map(row => [row.mpoNo, row.date, row.vendor, row.client, row.brand, row.campaign, row.medium, row.status, row.paymentStatus, row.reconciliationStatus, row.totalSpots, row.gross, row.net, row.grandTotal]),
+      currencyColumns: [11, 12, 13],
     },
   ];
 
@@ -420,7 +429,21 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
 
   const exportExecutiveSummary = () => {
     const headers = ["Metric", "Value", "Context"];
-    const rows = summaryCards.map(card => [card.label, typeof card.value === "number" ? card.value : card.value, card.sub]);
+    const currencySummaryLabels = new Set([
+      "Filtered MPO Value",
+      "Paid Value",
+      "Outstanding Exposure",
+      "Reconciled Value",
+      "Campaign Budget Pool",
+      "Gross MPO Value",
+    ]);
+    const rows = summaryCards.map(card => [
+      card.label,
+      currencySummaryLabels.has(card.label) && typeof card.value === "number"
+        ? formatNairaExportValue(card.value)
+        : card.value,
+      card.sub,
+    ]);
     buildSectionExport("Executive Finance Summary", headers, rows, filterDescriptor);
   };
 
@@ -533,7 +556,7 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
                   <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16 }}>{section.icon} {section.title}</h2>
                   <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>{section.desc}</p>
                 </div>
-                <Btn variant="blue" size="sm" icon="⬇" onClick={() => buildSectionExport(section.title, section.headers, section.rows, filterDescriptor)}>
+                <Btn variant="blue" size="sm" icon="⬇" onClick={() => buildSectionExport(section.title, section.headers, formatExportRowsWithCurrency(section.rows, section.currencyColumns || []), filterDescriptor)}>
                   Export Section
                 </Btn>
               </div>

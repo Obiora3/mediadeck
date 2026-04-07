@@ -375,25 +375,6 @@ const AuthPage = ({ onLogin }) => {
               </div>
             </div>
 
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: "7px 12px",
-                borderRadius: 999,
-                background: "rgba(124,58,237,.08)",
-                color: "#6d28d9",
-                fontSize: 11,
-                fontWeight: 800,
-                letterSpacing: ".08em",
-                textTransform: "uppercase",
-                marginBottom: 14,
-              }}
-            >
-              Secure access
-            </div>
-
             <h2
               style={{
                 margin: 0,

@@ -6,6 +6,7 @@ import Modal from "../components/Modal";
 import PrintPreview from "../components/mpo/PrintPreview";
 import { Btn, Field, Card, Stat } from "../components/ui/primitives";
 import { activeOnly } from "../utils/records";
+import { formatNairaExportValue, formatExportRowsWithCurrency } from "../utils/export";
 import { fmt, fmtN } from "../utils/formatters";
 import { MPO_PAYMENT_STATUS_OPTIONS, MPO_RECON_STATUS_OPTIONS, MPO_PROOF_STATUS_OPTIONS } from "../constants/mpoWorkflow";
 import { getDaysPastDue, normalizeReceivableRecord, buildReceivableFromMpo } from "../services/receivables";
@@ -207,7 +208,7 @@ const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Btn variant="ghost" size="sm" onClick={() => setBudgetFilters({ clientId: "", status: "", paymentStatus: "", search: "" })}>Reset</Btn>
-            <Btn variant="blue" size="sm" icon="⬇" onClick={() => exportBudgetView("Budgeting Summary", ["Metric", "Value"], [["Campaign Budget Pool", totalBudget], ["Committed Spend", totalCommitted], ["Invoiced", totalInvoiced], ["Paid", totalPaid], ["Outstanding", totalOutstanding], ["Available Budget", availableBudget], ["Over-budget Campaigns", overBudgetCount], ["Average Utilization", `${averageUtilization.toFixed(1)}%`]])}>Export Summary</Btn>
+            <Btn variant="blue" size="sm" icon="⬇" onClick={() => exportBudgetView("Budgeting Summary", ["Metric", "Value"], [["Campaign Budget Pool", formatNairaExportValue(totalBudget)], ["Committed Spend", formatNairaExportValue(totalCommitted)], ["Invoiced", formatNairaExportValue(totalInvoiced)], ["Paid", formatNairaExportValue(totalPaid)], ["Outstanding", formatNairaExportValue(totalOutstanding)], ["Available Budget", formatNairaExportValue(availableBudget)], ["Over-budget Campaigns", overBudgetCount], ["Average Utilization", `${averageUtilization.toFixed(1)}%`]])}>Export Summary</Btn>
           </div>
         </div>
 
@@ -238,7 +239,7 @@ const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Campaign Budget Tracker</h2>
               <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Budget vs commitments, invoicing, and payment delivery per campaign.</p>
             </div>
-            <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Campaign Budget Tracker", ["Campaign", "Client", "Brand", "Medium", "Status", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding", "Utilization %", "MPO Count"], campaignFinanceRows.map(row => [row.campaign, row.client, row.brand, row.medium, row.status, row.budget, row.committed, row.available, row.invoiced, row.paid, row.outstanding, `${row.utilization.toFixed(1)}%`, row.mpoCount]))}>Export Tracker</Btn>
+            <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Campaign Budget Tracker", ["Campaign", "Client", "Brand", "Medium", "Status", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding", "Utilization %", "MPO Count"], formatExportRowsWithCurrency(campaignFinanceRows.map(row => [row.campaign, row.client, row.brand, row.medium, row.status, row.budget, row.committed, row.available, row.invoiced, row.paid, row.outstanding, `${row.utilization.toFixed(1)}%`, row.mpoCount]), [5, 6, 7, 8, 9, 10]))}>Export Tracker</Btn>
           </div>
           {campaignFinanceRows.length === 0 ? <Empty icon="🎯" title="No campaign budgets found" sub="Create campaigns and issue MPOs to populate this tracker." /> : (
             <div style={{ overflowX: "auto" }}>
@@ -285,7 +286,7 @@ const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
           <Card>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Invoice Aging</h2>
-              <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Invoice Aging", ["Bucket", "Count", "Outstanding"], agingBuckets.map(row => [row.label, row.count, row.value]))}>Export Aging</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Invoice Aging", ["Bucket", "Count", "Outstanding"], formatExportRowsWithCurrency(agingBuckets.map(row => [row.label, row.count, row.value]), [2]))}>Export Aging</Btn>
             </div>
             <div style={{ display: "grid", gap: 10 }}>
               {agingBuckets.map(bucket => (
@@ -303,7 +304,7 @@ const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
           <Card>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Client Budget Coverage</h2>
-              <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Client Budget Coverage", ["Client", "Campaigns", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding"], clientBudgetRows.map(row => [row.client, row.campaigns, row.budget, row.committed, row.available, row.invoiced, row.paid, row.outstanding]))}>Export Clients</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Client Budget Coverage", ["Client", "Campaigns", "Budget", "Committed", "Available", "Invoiced", "Paid", "Outstanding"], formatExportRowsWithCurrency(clientBudgetRows.map(row => [row.client, row.campaigns, row.budget, row.committed, row.available, row.invoiced, row.paid, row.outstanding]), [2, 3, 4, 5, 6, 7]))}>Export Clients</Btn>
             </div>
             {clientBudgetRows.length === 0 ? <Empty icon="👥" title="No client budgets yet" sub="Link campaigns to clients to build the coverage summary." /> : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -335,7 +336,7 @@ const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
             <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Invoice & Payment Register</h2>
             <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Monitor every MPO through invoice receipt, payment processing, and close-out.</p>
           </div>
-          <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Invoice and Payment Register", ["MPO No.", "Vendor", "Client", "Campaign", "Invoice No.", "Invoice Date", "Invoice Status", "Payment Status", "Payment Ref", "Paid At", "Age (Days)", "Outstanding"], invoiceAgingRows.map(row => [row.mpoNo, row.vendor, row.client, row.campaign, row.invoiceNo, row.invoiceDate, row.invoiceStatus, row.paymentStatus, row.paymentReference, row.paidAt, row.ageDays, row.outstanding]))}>Export Register</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Invoice and Payment Register", ["MPO No.", "Vendor", "Client", "Campaign", "Invoice No.", "Invoice Date", "Invoice Status", "Payment Status", "Payment Ref", "Paid At", "Age (Days)", "Outstanding"], formatExportRowsWithCurrency(invoiceAgingRows.map(row => [row.mpoNo, row.vendor, row.client, row.campaign, row.invoiceNo, row.invoiceDate, row.invoiceStatus, row.paymentStatus, row.paymentReference, row.paidAt, row.ageDays, row.outstanding]), [11]))}>Export Register</Btn>
         </div>
         {invoiceAgingRows.length === 0 ? <Empty icon="💳" title="No invoice rows yet" sub="Record invoice and payment details in MPO execution to populate this register." /> : (
           <div style={{ overflowX: "auto" }}>
@@ -370,7 +371,7 @@ const BudgetingPage = ({ vendors, clients, campaigns, mpos }) => {
             <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Monthly Budget vs Cashflow</h2>
             <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Watch commitments, invoicing, and cash outflow by period.</p>
           </div>
-          <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Monthly Budget vs Cashflow", ["Period", "Budget", "Committed", "Invoiced", "Paid", "Outstanding"], monthlyCashflow.map(row => [row.period, row.budget, row.committed, row.invoiced, row.paid, row.outstanding]))}>Export Cashflow</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => exportBudgetView("Monthly Budget vs Cashflow", ["Period", "Budget", "Committed", "Invoiced", "Paid", "Outstanding"], formatExportRowsWithCurrency(monthlyCashflow.map(row => [row.period, row.budget, row.committed, row.invoiced, row.paid, row.outstanding]), [1, 2, 3, 4, 5]))}>Export Cashflow</Btn>
         </div>
         {monthlyCashflow.length === 0 ? <Empty icon="📅" title="No monthly cashflow yet" sub="Invoices and MPOs will populate the monthly cashflow view." /> : (
           <div style={{ overflowX: "auto" }}>
@@ -585,7 +586,7 @@ const CloseoutPage = ({ vendors, clients, campaigns, mpos, onOpenReceivables }) 
       <div class="grid">
         <div class="card"><div class="label">Delivery</div><div class="value">${row.aired} / ${row.planned} spots</div><div class="muted">${row.deliveryPct.toFixed(1)}% delivered</div></div>
         <div class="card"><div class="label">Make-good</div><div class="value">${row.makegood} spots</div><div class="muted">Missed: ${row.missed}</div></div>
-        <div class="card"><div class="label">Reconciled Amount</div><div class="value">${fmtN(row.reconciledAmount)}</div><div class="muted">Invoice: ${row.invoiceNo}</div></div>
+        <div class="card"><div class="label">Reconciled Amount</div><div class="value">${formatNairaExportValue(row.reconciledAmount)}</div><div class="muted">Invoice: ${row.invoiceNo}</div></div>
       </div>
       <div class="card" style="margin-bottom:18px">
         <h2>Closure Health</h2>
@@ -635,7 +636,7 @@ const CloseoutPage = ({ vendors, clients, campaigns, mpos, onOpenReceivables }) 
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Btn variant="ghost" size="sm" onClick={() => setFilters({ clientId: "", proofStatus: "", reconciliationStatus: "", closeoutStage: "", search: "" })}>Reset</Btn>
-            <Btn variant="blue" size="sm" icon="⬇" onClick={() => exportView("Closeout Summary", ["Metric", "Value"], [["MPO Value in Closeout", totalValue], ["Ready to Bill", readyToBillCount], ["Proof Pending", proofPendingCount], ["Open Make-good Items", openMakegoodCount], ["Exceptions", exceptionCount], ["Closed", closedCount], ["Collections Exposure", collectionsExposure], ["Average Delivery", `${avgDelivery.toFixed(1)}%`]])}>Export Summary</Btn>
+            <Btn variant="blue" size="sm" icon="⬇" onClick={() => exportView("Closeout Summary", ["Metric", "Value"], [["MPO Value in Closeout", formatNairaExportValue(totalValue)], ["Ready to Bill", readyToBillCount], ["Proof Pending", proofPendingCount], ["Open Make-good Items", openMakegoodCount], ["Exceptions", exceptionCount], ["Closed", closedCount], ["Collections Exposure", formatNairaExportValue(collectionsExposure)], ["Average Delivery", `${avgDelivery.toFixed(1)}%`]])}>Export Summary</Btn>
           </div>
         </div>
 
@@ -666,7 +667,7 @@ const CloseoutPage = ({ vendors, clients, campaigns, mpos, onOpenReceivables }) 
             <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Closeout Pipeline</h2>
             <p style={{ color: "var(--text2)", fontSize: 12, marginTop: 3 }}>Track MPOs through live delivery, reconciliation, billing, collection, and final closure.</p>
           </div>
-          <Btn variant="ghost" size="sm" onClick={() => exportView("Closeout Pipeline", ["Stage", "Count", "Value"], stageSummary.map(row => [row.label, row.count, row.value]))}>Export Pipeline</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => exportView("Closeout Pipeline", ["Stage", "Count", "Value"], formatExportRowsWithCurrency(stageSummary.map(row => [row.label, row.count, row.value]), [2]))}>Export Pipeline</Btn>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
           {stageSummary.map(row => (
@@ -691,7 +692,7 @@ const CloseoutPage = ({ vendors, clients, campaigns, mpos, onOpenReceivables }) 
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Btn variant="ghost" size="sm" onClick={() => setPage && setPage("mpo")}>Open MPO Workspace</Btn>
-              <Btn variant="ghost" size="sm" onClick={() => exportView("Execution Variance and Billing Readiness", ["MPO No.", "Campaign", "Client", "Vendor", "Planned", "Aired", "Missed", "Make-good", "Delivery %", "Proof", "Reconciliation", "Invoice", "Payment", "Stage", "Ready to Bill", "Ready to Close", "Reconciled Amount"], closeoutRows.map(row => [row.mpoNo, row.campaign, row.client, row.vendor, row.planned, row.aired, row.missed, row.makegood, `${row.deliveryPct.toFixed(1)}%`, row.proofStatus, row.reconciliationStatus, row.invoiceStatus, row.paymentStatus, row.stageLabel, row.readyToBill ? "Yes" : "No", row.readyToClose ? "Yes" : "No", row.reconciledAmount]))}>Export Matrix</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Execution Variance and Billing Readiness", ["MPO No.", "Campaign", "Client", "Vendor", "Planned", "Aired", "Missed", "Make-good", "Delivery %", "Proof", "Reconciliation", "Invoice", "Payment", "Stage", "Ready to Bill", "Ready to Close", "Reconciled Amount"], formatExportRowsWithCurrency(closeoutRows.map(row => [row.mpoNo, row.campaign, row.client, row.vendor, row.planned, row.aired, row.missed, row.makegood, `${row.deliveryPct.toFixed(1)}%`, row.proofStatus, row.reconciliationStatus, row.invoiceStatus, row.paymentStatus, row.stageLabel, row.readyToBill ? "Yes" : "No", row.readyToClose ? "Yes" : "No", row.reconciledAmount]), [16]))}>Export Matrix</Btn>
             </div>
           </div>
           {closeoutRows.length === 0 ? <Empty icon="📑" title="No closeout rows yet" sub="As campaigns air and proofs arrive, closeout signals will appear here." /> : (
@@ -754,7 +755,7 @@ const CloseoutPage = ({ vendors, clients, campaigns, mpos, onOpenReceivables }) 
           <Card>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Billing & Collections Watchlist</h2>
-              <Btn variant="ghost" size="sm" onClick={() => exportView("Billing and Collections Watchlist", ["MPO No.", "Client", "Campaign", "Stage", "Invoice Status", "Payment Status", "Ready to Bill", "Amount", "Payment Ref", "Paid At"], collectionsRows.map(row => [row.mpoNo, row.client, row.campaign, row.stageLabel, row.invoiceStatus, row.paymentStatus, row.readyToBill ? "Yes" : "No", row.reconciledAmount, row.paymentReference, row.paidAt]))}>Export Watchlist</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Billing and Collections Watchlist", ["MPO No.", "Client", "Campaign", "Stage", "Invoice Status", "Payment Status", "Ready to Bill", "Amount", "Payment Ref", "Paid At"], formatExportRowsWithCurrency(collectionsRows.map(row => [row.mpoNo, row.client, row.campaign, row.stageLabel, row.invoiceStatus, row.paymentStatus, row.readyToBill ? "Yes" : "No", row.reconciledAmount, row.paymentReference, row.paidAt]), [7]))}>Export Watchlist</Btn>
             </div>
             {billingRows.length === 0 ? <Empty icon="💼" title="No billing items yet" sub="Completed reconciliation will move rows into this watchlist." /> : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -954,7 +955,7 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
 
   const exportStatement = (row) => {
     const paymentRows = row.payments.length
-      ? row.payments.map(payment => `<tr><td>${formatIsoDate(payment.receivedAt)}</td><td>${payment.reference || "—"}</td><td>${payment.channel || "—"}</td><td>${fmtN(payment.amount)}</td><td>${payment.note || "—"}</td></tr>`).join("")
+      ? row.payments.map(payment => `<tr><td>${formatIsoDate(payment.receivedAt)}</td><td>${payment.reference || "—"}</td><td>${payment.channel || "—"}</td><td>${formatNairaExportValue(payment.amount)}</td><td>${payment.note || "—"}</td></tr>`).join("")
       : `<tr><td colspan="5" style="text-align:center;color:#667085">No payment logged yet.</td></tr>`;
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Receivable Statement - ${row.invoiceNo}</title>
       <style>
@@ -980,9 +981,9 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
         <div class="card"><div class="label">Status</div><div class="value">${getStatusLabel(row.status)}</div></div>
       </div>
       <div class="grid">
-        <div class="card"><div class="label">Gross Amount</div><div class="value">${fmtN(row.grossAmount)}</div></div>
-        <div class="card"><div class="label">Received</div><div class="value">${fmtN(row.amountReceived)}</div></div>
-        <div class="card"><div class="label">Outstanding</div><div class="value">${fmtN(row.balance)}</div></div>
+        <div class="card"><div class="label">Gross Amount</div><div class="value">${formatNairaExportValue(row.grossAmount)}</div></div>
+        <div class="card"><div class="label">Received</div><div class="value">${formatNairaExportValue(row.amountReceived)}</div></div>
+        <div class="card"><div class="label">Outstanding</div><div class="value">${formatNairaExportValue(row.balance)}</div></div>
         <div class="card"><div class="label">Collection Stage</div><div class="value">${getStageLabel(row.collectionStage)}</div></div>
       </div>
       <h2>Context</h2>
@@ -998,8 +999,8 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
       </table>
     </body></html>`;
     const csvRows = row.payments.length
-      ? row.payments.map(payment => [row.invoiceNo, row.clientName, formatIsoDate(payment.receivedAt), payment.reference, payment.channel, payment.amount, payment.note])
-      : [[row.invoiceNo, row.clientName, "", "", "", 0, "No payment logged yet"]];
+      ? row.payments.map(payment => [row.invoiceNo, row.clientName, formatIsoDate(payment.receivedAt), payment.reference, payment.channel, formatNairaExportValue(payment.amount), payment.note])
+      : [[row.invoiceNo, row.clientName, "", "", "", formatNairaExportValue(0), "No payment logged yet"]];
     setPreview({ html, csv: buildCSV(csvRows, ["Invoice No.", "Client", "Payment Date", "Reference", "Channel", "Amount", "Note"]), title: `Statement - ${row.invoiceNo}` });
   };
 
@@ -1127,7 +1128,7 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Btn variant="secondary" onClick={openManualForm}>New Manual Invoice</Btn>
           <Btn variant="ghost" onClick={() => onOpenCloseout && onOpenCloseout()}>Open Closeout</Btn>
-          <Btn variant="blue" icon="⬇" onClick={() => exportView("Receivables Ledger", ["Invoice No.", "Client", "Campaign", "MPO", "Invoice Date", "Due Date", "Status", "Collection Stage", "Gross Amount", "Received", "Outstanding", "Days Past Due", "Owner", "Notes"], filteredRows.map(row => [row.invoiceNo, row.clientName, row.campaignName, row.mpoNo, row.invoiceDate, row.dueDate, getStatusLabel(row.status), getStageLabel(row.collectionStage), row.grossAmount, row.amountReceived, row.balance, row.daysPastDue, row.owner, row.notes]))}>Export Ledger</Btn>
+          <Btn variant="blue" icon="⬇" onClick={() => exportView("Receivables Ledger", ["Invoice No.", "Client", "Campaign", "MPO", "Invoice Date", "Due Date", "Status", "Collection Stage", "Gross Amount", "Received", "Outstanding", "Days Past Due", "Owner", "Notes"], formatExportRowsWithCurrency(filteredRows.map(row => [row.invoiceNo, row.clientName, row.campaignName, row.mpoNo, row.invoiceDate, row.dueDate, getStatusLabel(row.status), getStageLabel(row.collectionStage), row.grossAmount, row.amountReceived, row.balance, row.daysPastDue, row.owner, row.notes]), [8, 9, 10]))}>Export Ledger</Btn>
         </div>
       </div>
 
@@ -1156,7 +1157,7 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
       <Card>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
           <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Aging Summary</h2>
-          <Btn variant="ghost" size="sm" onClick={() => exportView("Receivable Aging Summary", ["Bucket", "Count", "Outstanding Balance"], agingSummary.map(row => [row.label, row.count, row.balance]))}>Export Aging</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => exportView("Receivable Aging Summary", ["Bucket", "Count", "Outstanding Balance"], formatExportRowsWithCurrency(agingSummary.map(row => [row.label, row.count, row.balance]), [2]))}>Export Aging</Btn>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 12 }}>
           {agingSummary.map(bucket => (
@@ -1173,7 +1174,7 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
         <Card>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
             <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Receivables Ledger</h2>
-            <Btn variant="ghost" size="sm" onClick={() => exportView("Collections Watchlist", ["Invoice No.", "Client", "Status", "Stage", "Due Date", "Days Past Due", "Outstanding", "Owner", "Last Follow-up"], filteredRows.filter(row => row.balance > 0).map(row => [row.invoiceNo, row.clientName, getStatusLabel(row.status), getStageLabel(row.collectionStage), row.dueDate, row.daysPastDue, row.balance, row.owner, row.lastFollowUpAt]))}>Export Watchlist</Btn>
+            <Btn variant="ghost" size="sm" onClick={() => exportView("Collections Watchlist", ["Invoice No.", "Client", "Status", "Stage", "Due Date", "Days Past Due", "Outstanding", "Owner", "Last Follow-up"], formatExportRowsWithCurrency(filteredRows.filter(row => row.balance > 0).map(row => [row.invoiceNo, row.clientName, getStatusLabel(row.status), getStageLabel(row.collectionStage), row.dueDate, row.daysPastDue, row.balance, row.owner, row.lastFollowUpAt]), [6]))}>Export Watchlist</Btn>
           </div>
           {filteredRows.length === 0 ? <Empty icon="💵" title="No receivable records yet" sub="Create a manual invoice or promote reconciled closeout items into the ledger." /> : (
             <div style={{ overflowX: "auto" }}>
@@ -1273,7 +1274,7 @@ const ReceivablesPage = ({ user, clients, campaigns, mpos, receivables, receivab
           <Card>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Overdue Focus</h2>
-              <Btn variant="ghost" size="sm" onClick={() => exportView("Overdue Receivables", ["Invoice No.", "Client", "Campaign", "Due Date", "Days Past Due", "Outstanding", "Owner", "Collection Stage"], filteredRows.filter(row => row.daysPastDue > 0 && row.balance > 0).map(row => [row.invoiceNo, row.clientName, row.campaignName, row.dueDate, row.daysPastDue, row.balance, row.owner, getStageLabel(row.collectionStage)]))}>Export Overdue</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => exportView("Overdue Receivables", ["Invoice No.", "Client", "Campaign", "Due Date", "Days Past Due", "Outstanding", "Owner", "Collection Stage"], formatExportRowsWithCurrency(filteredRows.filter(row => row.daysPastDue > 0 && row.balance > 0).map(row => [row.invoiceNo, row.clientName, row.campaignName, row.dueDate, row.daysPastDue, row.balance, row.owner, getStageLabel(row.collectionStage)]), [5]))}>Export Overdue</Btn>
             </div>
             {filteredRows.filter(row => row.daysPastDue > 0 && row.balance > 0).length === 0 ? <Empty icon="🕒" title="No overdue invoices" sub="Current unpaid items will roll in here once they pass due date." /> : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
