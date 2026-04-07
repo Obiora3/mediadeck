@@ -42,11 +42,44 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
 
   return (
     <div className="fade">
-      <div style={{ marginBottom: 28 }}>
-        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 26, letterSpacing: "-.03em" }}>
-          Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}, <span style={{ color: "var(--accent)" }}>{user.name?.split(" ")[0]}</span> 👋
+      <div style={{ marginBottom: 28, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <h1
+          style={{
+            fontFamily: "'Syne',sans-serif",
+            fontWeight: 800,
+            fontSize: 26,
+            letterSpacing: "-.03em",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 10,
+            flexWrap: "wrap",
+            textAlign: "center",
+          }}
+        >
+          <span>
+            Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}, <span style={{ color: "var(--accent)" }}>{user.name?.split(" ")[0]}</span>
+          </span>
+          <span
+            aria-hidden="true"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              background: "rgba(240,165,0,.12)",
+              border: "1px solid rgba(240,165,0,.22)",
+              color: "var(--accent)",
+              fontSize: 14,
+              lineHeight: 1,
+            }}
+          >
+            ✦
+          </span>
         </h1>
-        <p style={{ color: "var(--text2)", marginTop: 5 }}>{user.agency} — Media Schedule Platform</p>
+        <p style={{ color: "var(--text2)", marginTop: 5, textAlign: "center" }}>{user.agency} — Media Schedule Platform</p>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 24 }}>

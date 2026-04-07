@@ -1,7 +1,7 @@
 /* ── STYLES ─────────────────────────────────────────────── */
 const GlobalStyle = ({ theme }) => (
   <style>{`
-    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap');
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     :root{
       ${theme === "dark" ? `
@@ -15,9 +15,10 @@ const GlobalStyle = ({ theme }) => (
       `}
       --accent:#f0a500;--blue:#3b7ef5;--green:#16a34a;
       --red:#ef4444;--purple:#8b5cf6;--teal:#0d9488;--orange:#f97316;
+      --font-body:'Inter',sans-serif;--font-heading:'Plus Jakarta Sans',sans-serif;
     }
-    html,body,#root{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
-    h1,h2,h3,h4,h5,h6,strong,th{color:var(--text)}
+    html,body,#root{height:100%;font-family:var(--font-body);background:var(--bg);color:var(--text)}
+    h1,h2,h3,h4,h5,h6,strong,th{color:var(--text);font-family:var(--font-heading)}
     p,span,label,td,li,small{color:inherit}
     input::placeholder,textarea::placeholder{color:var(--text3);opacity:1}
     select,option,input,textarea{color:var(--text)}
@@ -51,7 +52,7 @@ const Btn = ({ children, variant = "primary", size = "md", onClick, type = "butt
   };
   return (
     <button type={type} onClick={onClick} disabled={disabled || loading}
-      style={{ display: "inline-flex", alignItems: "center", gap: 7, fontFamily: "'Syne',sans-serif", fontWeight: 600, border: "none", borderRadius: 9, cursor: (disabled || loading) ? "not-allowed" : "pointer", transition: "all .18s", opacity: (disabled || loading) ? .55 : 1, outline: "none", whiteSpace: "nowrap", ...sz, ...vars[variant], ...style }}
+      style={{ display: "inline-flex", alignItems: "center", gap: 7, fontFamily: "var(--font-heading)", fontWeight: 700, letterSpacing: "-0.01em", border: "none", borderRadius: 9, cursor: (disabled || loading) ? "not-allowed" : "pointer", transition: "all .18s", opacity: (disabled || loading) ? .55 : 1, outline: "none", whiteSpace: "nowrap", ...sz, ...vars[variant], ...style }}
       onMouseEnter={e => { if (!disabled && !loading) e.currentTarget.style.filter = "brightness(1.18)"; }}
       onMouseLeave={e => e.currentTarget.style.filter = ""}>
       {loading ? <span className="spin" style={{ fontSize: 14 }}>⟳</span> : icon && <span style={{ fontSize: size === "sm" ? 13 : 16 }}>{icon}</span>}
@@ -143,7 +144,7 @@ const Stat = ({ label, value, sub, color = "var(--accent)", icon, valueSize = "c
         fontSize: valueSize,
         lineHeight: 1.08,
         fontWeight: 800,
-        fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        fontFamily: "var(--font-heading)",
         fontVariantNumeric: "tabular-nums",
         letterSpacing: "-0.04em",
         color,

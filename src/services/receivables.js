@@ -26,7 +26,28 @@ const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const receivablesKeyForAgency = (agencyId) =>
   agencyId ? `msp_receivables_${agencyId}` : "msp_receivables";
 
-const receivableSelect = `*, payments:receivable_payments(*)`;
+const receivableListSelect = `
+  id,
+  agency_id,
+  mpo_id,
+  client_id,
+  campaign_id,
+  invoice_no,
+  invoice_date,
+  due_date,
+  gross_amount,
+  status,
+  collection_stage,
+  owner,
+  source,
+  notes,
+  last_payment_at,
+  last_follow_up_at,
+  created_at,
+  updated_at
+`;
+
+const receivableDetailSelect = `*, payments:receivable_payments(*)`;
 
 export const isoToday = () => new Date().toISOString().slice(0, 10);
 
@@ -44,7 +65,7 @@ export const formatIsoDate = (isoDate) => {
   return parsed.toLocaleDateString("en-NG");
 };
 
-const looksLikeUuid = (value = "") =>
+export const looksLikeUuid = (value = "") =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     String(value || "").trim()
   );
@@ -222,10 +243,12 @@ const buildReceivablePayloadForSupabase = (record = {}, agencyId, userId, mode =
   return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
 };
 
-export const fetchReceivablesFromSupabase = async () => {
+export const fetchReceivablesFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
   const { data, error } = await supabase
     .from("receivables")
-    .select(receivableSelect)
+    .select(receivableListSelect)
+    .eq("agency_id", agencyId)
     .order("updated_at", { ascending: false });
 
   if (error) throw error;
@@ -235,7 +258,7 @@ export const fetchReceivablesFromSupabase = async () => {
 export const fetchReceivableByIdFromSupabase = async (receivableId) => {
   const { data, error } = await supabase
     .from("receivables")
-    .select(receivableSelect)
+    .select(receivableDetailSelect)
     .eq("id", receivableId)
     .maybeSingle();
 
@@ -248,7 +271,7 @@ export const insertReceivableInSupabase = async (agencyId, userId, record) => {
   const { data, error } = await supabase
     .from("receivables")
     .insert([payload])
-    .select(receivableSelect)
+    .select(receivableDetailSelect)
     .single();
 
   if (error) throw error;
@@ -263,7 +286,7 @@ export const updateReceivableInSupabase = async (receivableId, record) => {
     .from("receivables")
     .update(payload)
     .eq("id", receivableId)
-    .select(receivableSelect)
+    .select(receivableDetailSelect)
     .single();
 
   if (error) throw error;
@@ -336,7 +359,7 @@ export const updateReceivableStatusInSupabase = async (receivableId, updates = {
     .from("receivables")
     .update(Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined)))
     .eq("id", receivableId)
-    .select(receivableSelect)
+    .select(receivableDetailSelect)
     .single();
 
   if (error) throw error;

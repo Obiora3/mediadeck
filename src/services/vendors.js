@@ -1,28 +1,51 @@
 import { supabase } from '../lib/supabase';
 
-export const fetchVendorsFromSupabase = async () => {
+const vendorListSelect = `
+  id,
+  agency_id,
+  name,
+  type,
+  contact,
+  email,
+  phone,
+  location,
+  default_rate,
+  discount,
+  commission,
+  notes,
+  is_archived,
+  created_at,
+  updated_at
+`;
+
+const mapVendorFromSupabase = (v) => ({
+  id: v.id,
+  name: v.name || '',
+  type: v.type || '',
+  contact: v.contact || '',
+  email: v.email || '',
+  phone: v.phone || '',
+  location: v.location || '',
+  rate: v.default_rate ?? '',
+  discount: v.discount ?? '',
+  commission: v.commission ?? '',
+  notes: v.notes || '',
+  archivedAt: v.is_archived ? (v.updated_at ? new Date(v.updated_at).getTime() : Date.now()) : null,
+  createdAt: v.created_at ? new Date(v.created_at).getTime() : Date.now(),
+});
+
+export const fetchVendorsFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
+
   const { data, error } = await supabase
     .from('vendors')
-    .select('*')
+    .select(vendorListSelect)
+    .eq('agency_id', agencyId)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
 
-  return (data || []).map((v) => ({
-    id: v.id,
-    name: v.name || '',
-    type: v.type || '',
-    contact: v.contact || '',
-    email: v.email || '',
-    phone: v.phone || '',
-    location: v.location || '',
-    rate: v.default_rate ?? '',
-    discount: v.discount ?? '',
-    commission: v.commission ?? '',
-    notes: v.notes || '',
-    archivedAt: v.is_archived ? (v.updated_at ? new Date(v.updated_at).getTime() : Date.now()) : null,
-    createdAt: v.created_at ? new Date(v.created_at).getTime() : Date.now(),
-  }));
+  return (data || []).map(mapVendorFromSupabase);
 };
 
 export const createVendorInSupabase = async (agencyId, userId, form) => {
@@ -45,26 +68,12 @@ export const createVendorInSupabase = async (agencyId, userId, form) => {
       notes: form.notes || null,
       is_archived: false,
     }])
-    .select()
+    .select(vendorListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    type: data.type || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    location: data.location || '',
-    rate: data.default_rate ?? '',
-    discount: data.discount ?? '',
-    commission: data.commission ?? '',
-    notes: data.notes || '',
-    archivedAt: data.is_archived ? (data.updated_at ? new Date(data.updated_at).getTime() : Date.now()) : null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-  };
+  return mapVendorFromSupabase(data);
 };
 
 export const updateVendorInSupabase = async (vendorId, form) => {
@@ -83,26 +92,12 @@ export const updateVendorInSupabase = async (vendorId, form) => {
       notes: form.notes || null,
     })
     .eq('id', vendorId)
-    .select()
+    .select(vendorListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    type: data.type || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    location: data.location || '',
-    rate: data.default_rate ?? '',
-    discount: data.discount ?? '',
-    commission: data.commission ?? '',
-    notes: data.notes || '',
-    archivedAt: data.is_archived ? (data.updated_at ? new Date(data.updated_at).getTime() : Date.now()) : null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-  };
+  return mapVendorFromSupabase(data);
 };
 
 export const archiveVendorInSupabase = async (vendorId) => {
@@ -110,26 +105,12 @@ export const archiveVendorInSupabase = async (vendorId) => {
     .from('vendors')
     .update({ is_archived: true })
     .eq('id', vendorId)
-    .select()
+    .select(vendorListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    type: data.type || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    location: data.location || '',
-    rate: data.default_rate ?? '',
-    discount: data.discount ?? '',
-    commission: data.commission ?? '',
-    notes: data.notes || '',
-    archivedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-  };
+  return mapVendorFromSupabase(data);
 };
 
 export const restoreVendorInSupabase = async (vendorId) => {
@@ -137,24 +118,10 @@ export const restoreVendorInSupabase = async (vendorId) => {
     .from('vendors')
     .update({ is_archived: false })
     .eq('id', vendorId)
-    .select()
+    .select(vendorListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    type: data.type || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    location: data.location || '',
-    rate: data.default_rate ?? '',
-    discount: data.discount ?? '',
-    commission: data.commission ?? '',
-    notes: data.notes || '',
-    archivedAt: null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-  };
+  return mapVendorFromSupabase(data);
 };

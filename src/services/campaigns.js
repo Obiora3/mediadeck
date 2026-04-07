@@ -1,30 +1,54 @@
 import { supabase } from '../lib/supabase';
 
-export const fetchCampaignsFromSupabase = async () => {
+const campaignListSelect = `
+  id,
+  agency_id,
+  client_id,
+  name,
+  brand,
+  objective,
+  start_date,
+  end_date,
+  budget,
+  status,
+  medium,
+  notes,
+  material_list,
+  is_archived,
+  created_at,
+  updated_at
+`;
+
+const mapCampaignFromSupabase = (c) => ({
+  id: c.id,
+  name: c.name || '',
+  clientId: c.client_id || '',
+  brand: c.brand || '',
+  objective: c.objective || '',
+  startDate: c.start_date || '',
+  endDate: c.end_date || '',
+  budget: c.budget ?? '',
+  status: c.status || 'planning',
+  medium: c.medium || '',
+  notes: c.notes || '',
+  materialList: Array.isArray(c.material_list) ? c.material_list : [],
+  archivedAt: c.is_archived ? (c.updated_at ? new Date(c.updated_at).getTime() : Date.now()) : null,
+  createdAt: c.created_at ? new Date(c.created_at).getTime() : Date.now(),
+  updatedAt: c.updated_at ? new Date(c.updated_at).getTime() : Date.now(),
+});
+
+export const fetchCampaignsFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
+
   const { data, error } = await supabase
     .from('campaigns')
-    .select('*')
+    .select(campaignListSelect)
+    .eq('agency_id', agencyId)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
 
-  return (data || []).map((c) => ({
-    id: c.id,
-    name: c.name || '',
-    clientId: c.client_id || '',
-    brand: c.brand || '',
-    objective: c.objective || '',
-    startDate: c.start_date || '',
-    endDate: c.end_date || '',
-    budget: c.budget ?? '',
-    status: c.status || 'planning',
-    medium: c.medium || '',
-    notes: c.notes || '',
-    materialList: Array.isArray(c.material_list) ? c.material_list : [],
-    archivedAt: c.is_archived ? (c.updated_at ? new Date(c.updated_at).getTime() : Date.now()) : null,
-    createdAt: c.created_at ? new Date(c.created_at).getTime() : Date.now(),
-    updatedAt: c.updated_at ? new Date(c.updated_at).getTime() : Date.now(),
-  }));
+  return (data || []).map(mapCampaignFromSupabase);
 };
 
 export const createCampaignInSupabase = async (agencyId, userId, form) => {
@@ -48,28 +72,12 @@ export const createCampaignInSupabase = async (agencyId, userId, form) => {
       material_list: (form.materialList || []).map((x) => x.trim()).filter(Boolean),
       is_archived: false,
     }])
-    .select()
+    .select(campaignListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    clientId: data.client_id || '',
-    brand: data.brand || '',
-    objective: data.objective || '',
-    startDate: data.start_date || '',
-    endDate: data.end_date || '',
-    budget: data.budget ?? '',
-    status: data.status || 'planning',
-    medium: data.medium || '',
-    notes: data.notes || '',
-    materialList: Array.isArray(data.material_list) ? data.material_list : [],
-    archivedAt: null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapCampaignFromSupabase(data);
 };
 
 export const updateCampaignInSupabase = async (campaignId, form) => {
@@ -89,28 +97,12 @@ export const updateCampaignInSupabase = async (campaignId, form) => {
       material_list: (form.materialList || []).map((x) => x.trim()).filter(Boolean),
     })
     .eq('id', campaignId)
-    .select()
+    .select(campaignListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    clientId: data.client_id || '',
-    brand: data.brand || '',
-    objective: data.objective || '',
-    startDate: data.start_date || '',
-    endDate: data.end_date || '',
-    budget: data.budget ?? '',
-    status: data.status || 'planning',
-    medium: data.medium || '',
-    notes: data.notes || '',
-    materialList: Array.isArray(data.material_list) ? data.material_list : [],
-    archivedAt: data.is_archived ? (data.updated_at ? new Date(data.updated_at).getTime() : Date.now()) : null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapCampaignFromSupabase(data);
 };
 
 export const archiveCampaignInSupabase = async (campaignId) => {
@@ -118,28 +110,12 @@ export const archiveCampaignInSupabase = async (campaignId) => {
     .from('campaigns')
     .update({ is_archived: true })
     .eq('id', campaignId)
-    .select()
+    .select(campaignListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    clientId: data.client_id || '',
-    brand: data.brand || '',
-    objective: data.objective || '',
-    startDate: data.start_date || '',
-    endDate: data.end_date || '',
-    budget: data.budget ?? '',
-    status: data.status || 'planning',
-    medium: data.medium || '',
-    notes: data.notes || '',
-    materialList: Array.isArray(data.material_list) ? data.material_list : [],
-    archivedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapCampaignFromSupabase(data);
 };
 
 export const restoreCampaignInSupabase = async (campaignId) => {
@@ -147,26 +123,10 @@ export const restoreCampaignInSupabase = async (campaignId) => {
     .from('campaigns')
     .update({ is_archived: false })
     .eq('id', campaignId)
-    .select()
+    .select(campaignListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    clientId: data.client_id || '',
-    brand: data.brand || '',
-    objective: data.objective || '',
-    startDate: data.start_date || '',
-    endDate: data.end_date || '',
-    budget: data.budget ?? '',
-    status: data.status || 'planning',
-    medium: data.medium || '',
-    notes: data.notes || '',
-    materialList: Array.isArray(data.material_list) ? data.material_list : [],
-    archivedAt: null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapCampaignFromSupabase(data);
 };

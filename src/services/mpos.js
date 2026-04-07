@@ -13,6 +13,91 @@ const DEFAULT_MPO_TERMS = [
 const MPO_ATTACHMENTS_BUCKET = "mpo-attachments";
 const sanitizeAttachmentFileName = (name = "file") => name.replace(/[^a-zA-Z0-9._-]+/g, "_");
 
+const mpoParentSelect = `
+  id,
+  agency_id,
+  campaign_id,
+  vendor_id,
+  mpo_no,
+  issue_date,
+  month,
+  months,
+  year,
+  medium,
+  signed_by,
+  signed_title,
+  prepared_by,
+  prepared_contact,
+  prepared_title,
+  agency_address,
+  transmit_msg,
+  status,
+  vendor_name,
+  client_name,
+  campaign_name,
+  brand,
+  total_spots,
+  total_gross,
+  disc_pct,
+  disc_amt,
+  less_disc,
+  comm_pct,
+  comm_amt,
+  after_comm,
+  surch_pct,
+  surch_amt,
+  surch_label,
+  net_val,
+  vat_pct,
+  vat_amt,
+  grand_total,
+  terms,
+  round_to_whole_naira,
+  dispatch_status,
+  dispatched_at,
+  dispatched_by,
+  dispatch_contact,
+  dispatch_note,
+  signed_mpo_url,
+  invoice_status,
+  invoice_no,
+  invoice_amount,
+  invoice_received_at,
+  invoice_url,
+  proof_status,
+  proof_url,
+  proof_received_at,
+  planned_spots,
+  aired_spots,
+  missed_spots,
+  makegood_spots,
+  reconciliation_status,
+  reconciliation_notes,
+  reconciled_amount,
+  payment_status,
+  payment_reference,
+  paid_at,
+  is_archived,
+  created_at,
+  updated_at
+`;
+
+const mpoSpotSelect = `
+  id,
+  mpo_id,
+  programme,
+  wd,
+  time_belt,
+  material,
+  duration,
+  rate_id,
+  rate_per_spot,
+  spots,
+  calendar_days,
+  schedule_month,
+  sort_order
+`;
+
 export const uploadMpoAttachmentAndGetUrl = async ({ agencyId, mpoId, kind, file }) => {
   if (!agencyId) throw new Error("No agency found for this workspace.");
   if (!mpoId) throw new Error("No MPO found for this upload.");
@@ -124,10 +209,13 @@ const mapMpoSpotToSupabase = (spot, index = 0) => ({
   sort_order: index,
 });
 
-export const fetchMposFromSupabase = async () => {
+export const fetchMposFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
+
   const { data: mpoRows, error: mpoError } = await supabase
     .from("mpos")
-    .select("*")
+    .select(mpoParentSelect)
+    .eq("agency_id", agencyId)
     .order("created_at", { ascending: false });
   if (mpoError) throw mpoError;
 
@@ -136,7 +224,7 @@ export const fetchMposFromSupabase = async () => {
   if (ids.length) {
     const { data, error } = await supabase
       .from("mpo_spots")
-      .select("*")
+      .select(mpoSpotSelect)
       .in("mpo_id", ids)
       .order("sort_order", { ascending: true });
     if (error) throw error;
@@ -220,13 +308,13 @@ export const createMpoInSupabase = async (agencyId, userId, record) => {
     is_archived: false,
   };
 
-  const { data: parent, error: parentError } = await supabase.from("mpos").insert([parentPayload]).select().single();
+  const { data: parent, error: parentError } = await supabase.from("mpos").insert([parentPayload]).select(mpoParentSelect).single();
   if (parentError) throw parentError;
 
   let mappedSpots = [];
   if ((record.spots || []).length) {
     const payload = record.spots.map((spot, index) => ({ mpo_id: parent.id, ...mapMpoSpotToSupabase(spot, index) }));
-    const { data: insertedSpots, error: spotsError } = await supabase.from("mpo_spots").insert(payload).select().order("sort_order", { ascending: true });
+    const { data: insertedSpots, error: spotsError } = await supabase.from("mpo_spots").insert(payload).select(mpoSpotSelect).order("sort_order", { ascending: true });
     if (spotsError) throw spotsError;
     mappedSpots = (insertedSpots || []).map(mapMpoSpotFromSupabase);
   }
@@ -299,7 +387,7 @@ export const updateMpoInSupabase = async (mpoId, record) => {
     paid_at: record.paidAt || null,
   };
 
-  const { data: parent, error: parentError } = await supabase.from("mpos").update(parentPayload).eq("id", mpoId).select().single();
+  const { data: parent, error: parentError } = await supabase.from("mpos").update(parentPayload).eq("id", mpoId).select(mpoParentSelect).single();
   if (parentError) throw parentError;
   const { error: deleteError } = await supabase.from("mpo_spots").delete().eq("mpo_id", mpoId);
   if (deleteError) throw deleteError;
@@ -307,7 +395,7 @@ export const updateMpoInSupabase = async (mpoId, record) => {
   let mappedSpots = [];
   if ((record.spots || []).length) {
     const payload = record.spots.map((spot, index) => ({ mpo_id: mpoId, ...mapMpoSpotToSupabase(spot, index) }));
-    const { data: insertedSpots, error: spotsError } = await supabase.from("mpo_spots").insert(payload).select().order("sort_order", { ascending: true });
+    const { data: insertedSpots, error: spotsError } = await supabase.from("mpo_spots").insert(payload).select(mpoSpotSelect).order("sort_order", { ascending: true });
     if (spotsError) throw spotsError;
     mappedSpots = (insertedSpots || []).map(mapMpoSpotFromSupabase);
   }
@@ -315,25 +403,25 @@ export const updateMpoInSupabase = async (mpoId, record) => {
 };
 
 export const archiveMpoInSupabase = async (mpoId) => {
-  const { data, error } = await supabase.from("mpos").update({ is_archived: true }).eq("id", mpoId).select().single();
+  const { data, error } = await supabase.from("mpos").update({ is_archived: true }).eq("id", mpoId).select(mpoParentSelect).single();
   if (error) throw error;
-  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select("*").eq("mpo_id", mpoId).order("sort_order", { ascending: true });
+  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select(mpoSpotSelect).eq("mpo_id", mpoId).order("sort_order", { ascending: true });
   if (spotError) throw spotError;
   return mapMpoFromSupabase(data, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
 
 export const restoreMpoInSupabase = async (mpoId) => {
-  const { data, error } = await supabase.from("mpos").update({ is_archived: false }).eq("id", mpoId).select().single();
+  const { data, error } = await supabase.from("mpos").update({ is_archived: false }).eq("id", mpoId).select(mpoParentSelect).single();
   if (error) throw error;
-  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select("*").eq("mpo_id", mpoId).order("sort_order", { ascending: true });
+  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select(mpoSpotSelect).eq("mpo_id", mpoId).order("sort_order", { ascending: true });
   if (spotError) throw spotError;
   return mapMpoFromSupabase(data, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
 
 export const updateMpoStatusInSupabase = async (mpoId, status) => {
-  const { data, error } = await supabase.from("mpos").update({ status }).eq("id", mpoId).select().single();
+  const { data, error } = await supabase.from("mpos").update({ status }).eq("id", mpoId).select(mpoParentSelect).single();
   if (error) throw error;
-  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select("*").eq("mpo_id", mpoId).order("sort_order", { ascending: true });
+  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select(mpoSpotSelect).eq("mpo_id", mpoId).order("sort_order", { ascending: true });
   if (spotError) throw spotError;
   return mapMpoFromSupabase(data, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
@@ -365,9 +453,9 @@ export const updateMpoExecutionInSupabase = async (mpoId, patch) => {
     payment_reference: patch.paymentReference || null,
     paid_at: patch.paidAt || null,
   };
-  const { data, error } = await supabase.from("mpos").update(payload).eq("id", mpoId).select().single();
+  const { data, error } = await supabase.from("mpos").update(payload).eq("id", mpoId).select(mpoParentSelect).single();
   if (error) throw error;
-  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select("*").eq("mpo_id", mpoId).order("sort_order", { ascending: true });
+  const { data: spotRows, error: spotError } = await supabase.from("mpo_spots").select(mpoSpotSelect).eq("mpo_id", mpoId).order("sort_order", { ascending: true });
   if (spotError) throw spotError;
   return mapMpoFromSupabase(data, (spotRows || []).map(mapMpoSpotFromSupabase));
 };

@@ -57,6 +57,23 @@ const store = {
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const collapseDaysToCounts = (days = []) =>
+  (days || []).reduce((acc, day) => {
+    const key = Number(day);
+    if (!key) return acc;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+const expandCountsToDays = (dayCounts = {}) =>
+  Object.entries(dayCounts || {})
+    .flatMap(([day, count]) =>
+      Array.from({ length: Math.max(0, Number(count) || 0) }, () => Number(day))
+    )
+    .sort((a, b) => a - b);
+
+const totalCountFromDayCounts = (dayCounts = {}) =>
+  Object.values(dayCounts || {}).reduce((sum, count) => sum + (Number(count) || 0), 0);
 const roundMoneyValue = (value, settings = {}) => {
   const num = Number(value) || 0;
   return settings?.roundToWholeNaira ? Math.round(num) : Math.round(num * 100) / 100;
@@ -334,9 +351,9 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const [spotModal, setSpotModal] = useState(null);
 
   // Daily schedule — calendar mode
-  // calRows: array of { id, programme, timeBelt, material, duration, rateId, customRate, selectedDates: Set<number> }
+  // calRows: array of { id, programme, timeBelt, material, duration, rateId, customRate, dayCounts: { [day]: count } }
   const [dailyMode, setDailyMode] = useState(false);
-  const blankCalRow = () => ({ id: uid(), programme: "", timeBelt: "", material: "", duration: "30", rateId: "", customRate: "", selectedDates: new Set() });
+  const blankCalRow = () => ({ id: uid(), programme: "", timeBelt: "", material: "", materialCustom: "", duration: "30", rateId: "", customRate: "", dayCounts: {} });
   // Multi-month: calData maps "Month Year" -> calRows array
   const [calData, setCalData] = useState({});
   const [activeCalMonth, setActiveCalMonth] = useState("");
@@ -362,7 +379,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     });
   };
 
-  const blankSpot = { programme: "", wd: "", timeBelt: "", material: "", duration: "30", rateId: "", customRate: "", spots: "", calendarDays: [] };
+  const blankSpot = { programme: "", wd: "", timeBelt: "", material: "", materialCustom: "", duration: "30", rateId: "", customRate: "", spots: "", calendarDays: [], calendarDayCounts: {} };
   const [spotForm, setSpotForm] = useState(blankSpot);
   const [editSpotId, setEditSpotId] = useState(null);
   const draftKey = "msp_mpo_draft";
@@ -673,17 +690,26 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     const sourceRows = rowsToAdd || calRows;
     const newSpots = [];
     sourceRows.forEach(row => {
-      if (!row.programme || row.selectedDates.size === 0) return;
+      const calendarDays = expandCountsToDays(row.dayCounts || {});
+      if (!row.programme || calendarDays.length === 0) return;
       const rate = vendorRates.find(r => r.id === row.rateId);
       const ratePerSpot = parseFloat(row.customRate) || parseFloat(rate?.ratePerSpot) || 0;
-      const calendarDays = Array.from(row.selectedDates).sort((a,b)=>a-b);
       const matFinal = row.material === "__custom__" ? (row.materialCustom || "") : (row.material || "");
-      newSpots.push({ id: uid(), programme: row.programme, wd: "", timeBelt: row.timeBelt,
-        material: matFinal, duration: row.duration, rateId: row.rateId,
-        ratePerSpot, spots: calendarDays.length, calendarDays,
-        scheduleMonth: monthLabel || mpoData.month });
+      newSpots.push({
+        id: uid(),
+        programme: row.programme,
+        wd: "",
+        timeBelt: row.timeBelt,
+        material: matFinal,
+        duration: row.duration,
+        rateId: row.rateId,
+        ratePerSpot,
+        spots: calendarDays.length,
+        calendarDays,
+        scheduleMonth: monthLabel || mpoData.month
+      });
     });
-    if (!newSpots.length) return setToast({ msg: "Fill Programme and select at least one date per row.", type: "error" });
+    if (!newSpots.length) return setToast({ msg: "Fill Programme and add at least one spot on at least one date per row.", type: "error" });
     setSpots(s => [...s, ...newSpots]);
     if (!rowsToAdd) { setDailyMode(false); setCalRows([blankCalRow()]); }
     setToast({ msg: `${newSpots.length} spot row(s) added from calendar.`, type: "success" });
@@ -693,10 +719,12 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     if (!spotForm.programme) return;
     const rate = vendorRates.find(r => r.id === spotForm.rateId);
     const ratePerSpot = parseFloat(spotForm.customRate) || parseFloat(rate?.ratePerSpot) || 0;
-    const calDays = spotForm.calendarDays || [];
+    const calDays = spotForm.calendarDays?.length
+      ? spotForm.calendarDays
+      : expandCountsToDays(spotForm.calendarDayCounts || {});
     const spotsCount = calDays.length > 0 ? calDays.length : (parseFloat(spotForm.spots) || 0);
     if (!spotsCount) return setToast({ msg: "Select at least one airing date or enter a spot count.", type: "error" });
-    const newSpot = { id: uid(), ...spotForm, ratePerSpot, spots: String(spotsCount), calendarDays: calDays };
+    const newSpot = { id: uid(), ...spotForm, ratePerSpot, spots: String(spotsCount), calendarDays: calDays, calendarDayCounts: collapseDaysToCounts(calDays) };
     if (editSpotId) { setSpots(s => s.map(x => x.id === editSpotId ? newSpot : x)); setEditSpotId(null); }
     else setSpots(s => [...s, newSpot]);
     setSpotForm(blankSpot); setSpotModal(null);
@@ -961,6 +989,48 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           </div>
         </Modal>
       )}
+      <style>{`
+        @media (max-width: 1520px) {
+          .mpo-list-card-grid {
+            grid-template-columns: 72px minmax(320px,1fr) !important;
+          }
+          .mpo-list-card-main,
+          .mpo-list-card-side,
+          .mpo-list-card-actions {
+            grid-column: 2 / -1 !important;
+          }
+          .mpo-list-card-side {
+            justify-self: stretch !important;
+          }
+          .mpo-list-card-summary {
+            justify-content: space-between !important;
+          }
+        }
+        @media (max-width: 980px) {
+          .mpo-list-card-grid {
+            grid-template-columns: 1fr !important;
+          }
+          .mpo-list-card-icon,
+          .mpo-list-card-main,
+          .mpo-list-card-side,
+          .mpo-list-card-actions {
+            grid-column: auto !important;
+          }
+          .mpo-list-card-main {
+            text-align: left !important;
+          }
+          .mpo-list-card-main-badges {
+            justify-content: flex-start !important;
+          }
+          .mpo-list-card-summary {
+            grid-template-columns: 1fr !important;
+            justify-content: stretch !important;
+          }
+          .mpo-list-card-actions {
+            justify-content: flex-start !important;
+          }
+        }
+      `}</style>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 10 }}>
         <div><h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>MPO Generator</h1><p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Create, manage & export Media Purchase Orders</p></div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}><Field value={searchTerm} onChange={setSearchTerm} placeholder="Search MPO, vendor, client..." /><Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} /><Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />{canManage && <Btn icon="+" onClick={openNew}>New MPO</Btn>}</div>
@@ -1033,13 +1103,56 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       {visibleMpos.length === 0 ? <Card><Empty icon="📄" title="No MPOs yet" sub="Create your first Media Purchase Order" /></Card> :
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {visibleMpoCards.map(m => (
-            <Card key={m.id} style={{ padding: "14px 18px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-                <div style={{ width: 44, height: 44, background: "rgba(240,165,0,.1)", border: "1px solid rgba(240,165,0,.2)", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>📄</div>
-                <div style={{ flex: 1, minWidth: 160 }}>
-                  <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>{m.mpoNo || "MPO"} <span style={{ color: "var(--text3)", fontSize: 13 }}>— {m.vendorName}</span></div>
-                  <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>{m.clientName} {m.brand && `· ${m.brand}`} · {(m.months||[]).length > 1 ? (m.months||[]).join("-") : m.month} {m.year} · {m.totalSpots} spots</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+            <Card key={m.id} style={{ padding: "18px 26px" }}>
+              <div
+                className="mpo-list-card-grid"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "72px minmax(460px,1fr) minmax(320px,430px)",
+                  columnGap: 18,
+                  rowGap: 18,
+                  alignItems: "start",
+                }}
+              >
+                <div
+                  className="mpo-list-card-icon"
+                  style={{
+                    width: 64,
+                    height: 64,
+                    background: "rgba(240,165,0,.08)",
+                    border: "1px solid rgba(240,165,0,.22)",
+                    borderRadius: 16,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 28,
+                    color: "var(--accent)",
+                    gridRow: "1 / span 2",
+                    alignSelf: "start",
+                    justifySelf: "center",
+                  }}
+                >
+                  📄
+                </div>
+
+                <div
+                  className="mpo-list-card-main"
+                  style={{
+                    minWidth: 0,
+                    textAlign: "center",
+                    paddingTop: 2,
+                  }}
+                >
+                  <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 16, lineHeight: 1.2 }}>
+                    {m.mpoNo || "MPO"} <span style={{ color: "var(--text3)", fontSize: 14 }}>— {m.vendorName}</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 8, lineHeight: 1.45 }}>
+                    {m.clientName} {m.brand && `· ${m.brand}`} · {(m.months || []).length > 1 ? (m.months || []).join("-") : m.month} {m.year} · {m.totalSpots} spots
+                  </div>
+                  <div
+                    className="mpo-list-card-main-badges"
+                    style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14, justifyContent: "center" }}
+                  >
                     <Badge color={statusColors[m.status || "draft"] || "accent"}>{MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft")}</Badge>
                     <Badge color={getMpoWorkflowMeta(m).color}>Waiting on: {getMpoWorkflowMeta(m).label}</Badge>
                     {isMpoAwaitingUser(user, m) ? <Badge color="blue">My Queue</Badge> : null}
@@ -1047,15 +1160,70 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                     <Badge color="blue">Invoice: {(MPO_INVOICE_STATUS_OPTIONS.find(o => o.value === (m.invoiceStatus || "pending"))?.label || m.invoiceStatus || "pending")}</Badge>
                     <Badge color="purple">Proof: {(MPO_PROOF_STATUS_OPTIONS.find(o => o.value === (m.proofStatus || "pending"))?.label || m.proofStatus || "pending")}</Badge>
                     <Badge color="green">Payment: {(MPO_PAYMENT_STATUS_OPTIONS.find(o => o.value === (m.paymentStatus || "unpaid"))?.label || m.paymentStatus || "unpaid")}</Badge>
+                    {isArchived(m) ? <Badge color="red">Archived</Badge> : null}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 7 }}>{getMpoWorkflowMeta(m).hint}</div>{isArchived(m) && <div style={{ marginTop: 4 }}><Badge color="red">Archived</Badge></div>}
+                  <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 14, lineHeight: 1.5 }}>
+                    {getMpoWorkflowMeta(m).hint}
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase" }}>Gross</div><div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, color: "var(--text2)" }}>{fmtN(m.totalGross)}</div></div>
-                  <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase" }}>Net Payable</div><div style={{ fontSize: 14, fontWeight: 700, marginTop: 2, color: "var(--accent)" }}>{fmtN(m.grandTotal || m.netVal)}</div></div>
-                  {canManageStatus ? <Field value={m.status || "draft"} onChange={v => requestMpoStatusChange(m, v)} options={[{ value: m.status || "draft", label: MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft") }, ...getAllowedMpoStatusTargets(user, m).map(value => ({ value, label: MPO_STATUS_LABELS[value] || value }))].filter((option, index, arr) => arr.findIndex(item => item.value === option.value) === index)} /> : <div style={{ minWidth: 110 }}><Badge color={statusColors[m.status || "draft"] || "accent"}>{(m.status || "draft").toUpperCase()}</Badge></div>}
+
+                <div
+                  className="mpo-list-card-side"
+                  style={{
+                    minWidth: 0,
+                    justifySelf: "end",
+                    width: "100%",
+                    maxWidth: 420,
+                  }}
+                >
+                  <div
+                    className="mpo-list-card-summary"
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(90px,1fr) minmax(120px,1fr) minmax(150px,170px)",
+                      gap: 18,
+                      alignItems: "center",
+                      justifyContent: "end",
+                    }}
+                  >
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Gross</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, marginTop: 8, color: "var(--text2)" }}>{fmtN(m.totalGross)}</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Net Payable</div>
+                      <div style={{ fontSize: 14, fontWeight: 800, marginTop: 8, color: "var(--accent)" }}>{fmtN(m.grandTotal || m.netVal)}</div>
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      {canManageStatus ? (
+                        <Field
+                          value={m.status || "draft"}
+                          onChange={v => requestMpoStatusChange(m, v)}
+                          options={[
+                            { value: m.status || "draft", label: MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft") },
+                            ...getAllowedMpoStatusTargets(user, m).map(value => ({ value, label: MPO_STATUS_LABELS[value] || value })),
+                          ].filter((option, index, arr) => arr.findIndex(item => item.value === option.value) === index)}
+                        />
+                      ) : (
+                        <div style={{ paddingTop: 8, textAlign: "center" }}>
+                          <Badge color={statusColors[m.status || "draft"] || "accent"}>{(m.status || "draft").toUpperCase()}</Badge>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
+
+                <div
+                  className="mpo-list-card-actions"
+                  style={{
+                    gridColumn: "2 / -1",
+                    display: "flex",
+                    gap: 10,
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    justifyContent: "flex-start",
+                  }}
+                >
                   {getQuickWorkflowActions(user, m).slice(0, 2).map(action => (
                     <Btn key={action.value} variant={action.variant} size="sm" onClick={() => requestMpoStatusChange(m, action.value)}>{action.label}</Btn>
                   ))}
@@ -1410,7 +1578,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                         <button key={m} onClick={() => setActiveCalMonth(m)}
                           style={{ flex: 1, padding: "9px 8px", border: "none", background: curCalMonth === m ? "var(--accent)" : "transparent", color: curCalMonth === m ? "#000" : "var(--text2)", fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 12, cursor: "pointer", borderRight: "1px solid var(--border)", transition: "all .15s" }}>
                           {m.slice(0,3)} <span style={{ fontSize: 10, opacity: .7 }}>{mpoData.year?.slice(-2)}</span>
-                          {(calData[m] || []).some(r => r.selectedDates?.size > 0) && (
+                          {(calData[m] || []).some(r => totalCountFromDayCounts(r.dayCounts || {}) > 0) && (
                             <span style={{ marginLeft: 4, background: "rgba(34,197,94,.25)", color: "var(--green)", borderRadius: 10, padding: "1px 5px", fontSize: 9 }}>✓</span>
                           )}
                         </button>
@@ -1465,7 +1633,23 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                         <td style={{ padding: "7px 9px", color: "var(--green)", fontWeight: 600, fontSize: 12 }}>{fmtN((parseFloat(r.spots) || 0) * (parseFloat(r.ratePerSpot) || 0))}</td>
                         <td style={{ padding: "7px 9px" }}>
                           <div style={{ display: "flex", gap: 5 }}>
-                            {canManage && <Btn variant="ghost" size="sm" onClick={() => { setSpotForm({ programme: r.programme, wd: r.wd, timeBelt: r.timeBelt, material: r.material, duration: r.duration, rateId: r.rateId||"", customRate: r.ratePerSpot||"", spots: r.spots, calendarDays: r.calendarDays||[] }); setEditSpotId(r.id); setSpotModal(true); }}>✏️</Btn>}
+                            {canManage && <Btn variant="ghost" size="sm" onClick={() => {
+                              setSpotForm({
+                                programme: r.programme,
+                                wd: r.wd,
+                                timeBelt: r.timeBelt,
+                                material: r.material,
+                                materialCustom: "",
+                                duration: r.duration,
+                                rateId: r.rateId || "",
+                                customRate: r.ratePerSpot || "",
+                                spots: r.spots,
+                                calendarDays: r.calendarDays || [],
+                                calendarDayCounts: collapseDaysToCounts(r.calendarDays || []),
+                              });
+                              setEditSpotId(r.id);
+                              setSpotModal(true);
+                            }}>✏️</Btn>}
                             <Btn variant="danger" size="sm" onClick={() => setSpots(s => s.filter(x => x.id !== r.id))}>×</Btn>
                           </div>
                         </td>

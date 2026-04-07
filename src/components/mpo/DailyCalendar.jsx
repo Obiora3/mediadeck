@@ -1,13 +1,15 @@
 import React from "react";
 import Field from "../Field";
 
+const totalCountFromDayCounts = (dayCounts = {}) =>
+  Object.values(dayCounts || {}).reduce((sum, count) => sum + (Number(count) || 0), 0);
+
 export default function DailyCalendar({ month, year, calRows, setCalRows, vendorRates, fmtN, blankCalRow, onAdd, campaignMaterials }) {
   const MONTH_NAMES = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
   const DAY_LABELS  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
   const mIdx      = (() => {
     const m = (month||"").toUpperCase();
-    // Try 3-letter abbreviation first (JAN, FEB…), then full name (JANUARY…)
     const short = MONTH_NAMES.indexOf(m.slice(0,3));
     return short >= 0 ? short : MONTH_NAMES.findIndex(n => m.startsWith(n));
   })();
@@ -16,7 +18,6 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
   const dim       = validMonth ? new Date(yr, mIdx + 1, 0).getDate() : 31;
   const firstDOW  = validMonth ? new Date(yr, mIdx, 1).getDay() : 0;
 
-  // Build week grid: array of 7-slot rows, null = empty cell
   const cells = [];
   for (let i = 0; i < firstDOW; i++) cells.push(null);
   for (let d = 1; d <= dim; d++) cells.push(d);
@@ -27,27 +28,31 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
   const updRow = (id, key, val) =>
     setCalRows(rows => rows.map(r => r.id === id ? { ...r, [key]: val } : r));
 
-  const toggleDate = (rowId, d) =>
+  const changeDateCount = (rowId, d, delta) =>
     setCalRows(rows => rows.map(r => {
       if (r.id !== rowId) return r;
-      const next = new Set(r.selectedDates);
-      next.has(d) ? next.delete(d) : next.add(d);
-      return { ...r, selectedDates: next };
+      const next = { ...(r.dayCounts || {}) };
+      const current = Number(next[d] || 0);
+      const updated = current + delta;
+      if (updated <= 0) delete next[d];
+      else next[d] = updated;
+      return { ...r, dayCounts: next };
     }));
 
   const quickSelect = (rowId, wdNums) =>
     setCalRows(rows => rows.map(r => {
       if (r.id !== rowId) return r;
-      const next = new Set();
+      const next = {};
       if (wdNums === "all") {
-        for (let d = 1; d <= dim; d++) next.add(d);
+        for (let d = 1; d <= dim; d++) next[d] = 1;
       } else if (wdNums === "clear") {
         /* empty */
       } else {
-        for (let d = 1; d <= dim; d++)
-          if (validMonth && wdNums.includes(new Date(yr, mIdx, d).getDay())) next.add(d);
+        for (let d = 1; d <= dim; d++) {
+          if (validMonth && wdNums.includes(new Date(yr, mIdx, d).getDay())) next[d] = 1;
+        }
       }
-      return { ...r, selectedDates: next };
+      return { ...r, dayCounts: next };
     }));
 
   const inp = (extra = {}) => ({
@@ -65,27 +70,25 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
 
   return (
     <div className="fade" style={{ marginBottom: 12 }}>
-      {/* Month header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
         <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 15, letterSpacing: 1 }}>
           📅 {MONTH_NAMES[mIdx]} {yr}
         </div>
         <div style={{ fontSize: 11, color: "var(--text3)" }}>
-          Click dates on the calendar to toggle airing days per spot row
+          Click a date to add one spot. Right-click a date to remove one spot.
         </div>
       </div>
 
       {calRows.map((row, ri) => {
         const rateObj = vendorRates.find(r => r.id === row.rateId);
         const rateVal = parseFloat(row.customRate) || parseFloat(rateObj?.ratePerSpot) || 0;
-        const spotCount = row.selectedDates.size;
+        const spotCount = totalCountFromDayCounts(row.dayCounts || {});
         const gross = rateVal * spotCount;
 
         return (
           <div key={row.id} style={{ border: "1px solid var(--border2)", borderRadius: 10,
               marginBottom: 16, background: "var(--bg2)", overflow: "hidden" }}>
 
-            {/* Row header bar */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
                 background: "var(--bg3)", padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
               <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 12,
@@ -96,7 +99,7 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
                 {spotCount > 0 && (
                   <span style={{ fontSize: 11, background: "rgba(240,165,0,.18)", color: "var(--accent)",
                       padding: "3px 10px", borderRadius: 12, fontWeight: 700 }}>
-                    {spotCount} spot{spotCount !== 1 ? "s" : ""}{rateVal > 0 ? ` · ₦${fmtN(gross)}` : ""}
+                    {spotCount} spot{spotCount !== 1 ? "s" : ""}{rateVal > 0 ? ` · ${fmtN(gross)}` : ""}
                   </span>
                 )}
                 {calRows.length > 1 && (
@@ -108,7 +111,6 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
             </div>
 
             <div style={{ padding: "12px 14px" }}>
-              {/* Programme selector from vendor rate cards */}
               {vendorRates.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text3)", textTransform: "uppercase", marginBottom: 5, letterSpacing: .5 }}>
@@ -121,11 +123,11 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
                       if (picked) {
                         setCalRows(rs => rs.map(r => r.id !== row.id ? r : {
                           ...r,
-                          rateId:      picked.id,
-                          programme:   picked.programme || r.programme,
-                          timeBelt:    picked.timeBelt  || r.timeBelt,
-                          duration:    picked.duration  || r.duration,
-                          customRate:  "",
+                          rateId: picked.id,
+                          programme: picked.programme || r.programme,
+                          timeBelt: picked.timeBelt  || r.timeBelt,
+                          duration: picked.duration  || r.duration,
+                          customRate: "",
                         }));
                       } else {
                         updRow(row.id, "rateId", "");
@@ -149,7 +151,6 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
                 </div>
               )}
 
-              {/* Spot detail fields */}
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr 1.4fr 64px 1.5fr",
                   gap: 8, marginBottom: 12 }}>
                 <div>
@@ -207,16 +208,15 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
                 </div>
               </div>
 
-              {/* Quick-select chips */}
               <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>
                 {[
-                  { label: "All",        act: () => quickSelect(row.id, "all") },
-                  { label: "Weekdays",   act: () => quickSelect(row.id, [1,2,3,4,5]) },
-                  { label: "M·W·F",      act: () => quickSelect(row.id, [1,3,5]) },
-                  { label: "T·Th",       act: () => quickSelect(row.id, [2,4]) },
-                  { label: "Weekends",   act: () => quickSelect(row.id, [0,6]) },
-                  { label: "Mon only",   act: () => quickSelect(row.id, [1]) },
-                  { label: "Clear",      act: () => quickSelect(row.id, "clear"), danger: true },
+                  { label: "1 per day", act: () => quickSelect(row.id, "all") },
+                  { label: "Weekdays", act: () => quickSelect(row.id, [1,2,3,4,5]) },
+                  { label: "M·W·F", act: () => quickSelect(row.id, [1,3,5]) },
+                  { label: "T·Th", act: () => quickSelect(row.id, [2,4]) },
+                  { label: "Weekends", act: () => quickSelect(row.id, [0,6]) },
+                  { label: "Mon only", act: () => quickSelect(row.id, [1]) },
+                  { label: "Clear", act: () => quickSelect(row.id, "clear"), danger: true },
                 ].map(({ label, act, danger }) => (
                   <button key={label} onClick={act} style={{
                     padding: "3px 10px", borderRadius: 20, fontSize: 10, fontWeight: 600,
@@ -227,9 +227,7 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
                 ))}
               </div>
 
-              {/* ── CALENDAR GRID ── */}
               <div style={{ userSelect: "none" }}>
-                {/* Day-of-week headers */}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
                     gap: 3, marginBottom: 4 }}>
                   {DAY_LABELS.map((d, i) => (
@@ -241,28 +239,39 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
                   ))}
                 </div>
 
-                {/* Weeks */}
                 {weeks.map((wk, wi) => (
                   <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 3 }}>
                     {wk.map((d, di) => {
                       if (!d) return <div key={`e${di}`} />;
-                      const isActive = row.selectedDates.has(d);
-                      const isWE = di === 0 || di === 6;
+                      const count = Number(row.dayCounts?.[d] || 0);
+                      const isActive = count > 0;
                       const dotw = validMonth ? new Date(yr, mIdx, d).getDay() : di;
                       const isWkend = dotw === 0 || dotw === 6;
                       return (
-                        <div key={d} onClick={() => toggleDate(row.id, d)}
+                        <div key={d} onClick={() => changeDateCount(row.id, d, 1)}
+                          onContextMenu={(e) => { e.preventDefault(); changeDateCount(row.id, d, -1); }}
                           style={{
-                            aspectRatio: "1", display: "flex", alignItems: "center",
+                            aspectRatio: "1", position: "relative", display: "flex", alignItems: "center",
                             justifyContent: "center", borderRadius: 8, cursor: "pointer",
                             border: isActive ? "2px solid var(--accent)" : "1px solid var(--border2)",
-                            background: isActive ? "var(--accent)" : isWkend ? "rgba(240,165,0,.05)" : "var(--bg3)",
-                            color: isActive ? "#000" : isWkend ? "var(--accent)" : "var(--text)",
+                            background: isActive ? "rgba(240,165,0,.18)" : isWkend ? "rgba(240,165,0,.05)" : "var(--bg3)",
+                            color: isActive ? "var(--accent)" : isWkend ? "var(--accent)" : "var(--text)",
                             fontWeight: isActive ? 800 : isWkend ? 600 : 400,
                             fontSize: 12, transition: "all .1s",
-                            boxShadow: isActive ? "0 2px 8px rgba(240,165,0,.35)" : "none"
-                          }}>
+                            boxShadow: isActive ? "0 2px 8px rgba(240,165,0,.20)" : "none"
+                          }}
+                          title="Click to add one spot, right-click to remove one">
                           {d}
+                          {isActive ? (
+                            <span style={{
+                              position: "absolute", top: 3, right: 3, minWidth: 16, height: 16,
+                              borderRadius: 999, background: "var(--accent)", color: "#000",
+                              fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center",
+                              justifyContent: "center", padding: "0 4px",
+                            }}>
+                              {count}
+                            </span>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -275,7 +284,6 @@ export default function DailyCalendar({ month, year, calRows, setCalRows, vendor
         );
       })}
 
-      {/* Footer actions */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
         <button onClick={() => setCalRows(r => [...r, blankCalRow()])}
           style={{ background: "none", border: "1px dashed var(--border2)", borderRadius: 8,

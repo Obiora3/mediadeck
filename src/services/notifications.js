@@ -2,6 +2,38 @@ import { supabase } from "../lib/supabase";
 import { normalizeRole } from "../constants/roles";
 import { MPO_STATUS_LABELS } from "../constants/mpoWorkflow";
 
+const auditEventSelect = `
+  id,
+  agency_id,
+  record_type,
+  record_id,
+  action,
+  actor_id,
+  actor_name,
+  actor_role,
+  note,
+  metadata,
+  created_at
+`;
+
+const notificationSelect = `
+  id,
+  agency_id,
+  recipient_user_id,
+  category,
+  title,
+  message,
+  record_type,
+  record_id,
+  link_page,
+  actor_id,
+  actor_name,
+  actor_role,
+  metadata,
+  read_at,
+  created_at
+`;
+
 const mapAuditEventFromSupabase = (row) => ({
   id: row.id,
   agencyId: row.agency_id,
@@ -32,7 +64,7 @@ export const createAuditEventInSupabase = async ({ agencyId, recordType, recordI
   const { data, error } = await supabase
     .from("audit_events")
     .insert([payload])
-    .select()
+    .select(auditEventSelect)
     .single();
   if (error) {
     if ((error.message || "").toLowerCase().includes("audit_events")) {
@@ -47,7 +79,7 @@ export const fetchAuditEventsForRecord = async (agencyId, recordType, recordId) 
   if (!agencyId || !recordType || !recordId) return [];
   const { data, error } = await supabase
     .from("audit_events")
-    .select("*")
+    .select(auditEventSelect)
     .eq("agency_id", agencyId)
     .eq("record_type", recordType)
     .eq("record_id", recordId)
@@ -65,7 +97,7 @@ export const fetchAuditEventsForAgency = async (agencyId, filter = "all", limit 
   if (!agencyId) return [];
   let query = supabase
     .from("audit_events")
-    .select("*")
+    .select(auditEventSelect)
     .eq("agency_id", agencyId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -102,7 +134,7 @@ export const fetchNotificationsFromSupabase = async (userId, agencyId, limit = 5
   if (!userId || !agencyId) return [];
   const { data, error } = await supabase
     .from("notifications")
-    .select("*")
+    .select(notificationSelect)
     .eq("agency_id", agencyId)
     .eq("recipient_user_id", userId)
     .order("created_at", { ascending: false })
@@ -122,7 +154,7 @@ export const markNotificationReadInSupabase = async (notificationId) => {
     .from("notifications")
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq("id", notificationId)
-    .select()
+    .select(notificationSelect)
     .single();
   if (error) throw error;
   return mapNotificationFromSupabase(data);
@@ -157,7 +189,7 @@ export const createNotificationForUserInSupabase = async ({ agencyId, recipientU
     actor_role: normalizeRole(actor?.role || "system"),
     metadata: metadata && typeof metadata === "object" ? metadata : {},
   };
-  const { data, error } = await supabase.from("notifications").insert([payload]).select().single();
+  const { data, error } = await supabase.from("notifications").insert([payload]).select(notificationSelect).single();
   if (error) {
     if ((error.message || "").toLowerCase().includes("notifications")) {
       throw new Error('Missing table "notifications". Run the provided SQL patch in Supabase SQL Editor.');
@@ -191,7 +223,7 @@ const createNotificationsForRolesInSupabase = async ({ agencyId, roles = [], exc
       metadata: metadata && typeof metadata === "object" ? metadata : {},
     }));
   if (!payload.length) return [];
-  const { data, error } = await supabase.from("notifications").insert(payload).select();
+  const { data, error } = await supabase.from("notifications").insert(payload).select(notificationSelect);
   if (error) {
     if ((error.message || "").toLowerCase().includes("notifications")) {
       throw new Error('Missing table "notifications". Run the provided SQL patch in Supabase SQL Editor.');

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { normalizeAgencyCode, findExistingAgencyByName } from "../../services/agencies";
-import { Card, Field, Btn } from "../ui/primitives";
+import { Field, Btn } from "../ui/primitives";
 
 /* ── AUTH ───────────────────────────────────────────────── */
-const AUTH_BG = "#f8fafc";
+const AUTH_BG = "#f5f7fb";
+
 
 const AuthPage = ({ onLogin }) => {
   const [mode, setMode] = useState("login");
@@ -27,7 +28,18 @@ const AuthPage = ({ onLogin }) => {
   const [agencyCheckLoading, setAgencyCheckLoading] = useState(false);
 
   const isRecoveryMode = mode === "recovery";
+  const isRegisterMode = mode === "register";
   const passwordLabel = useMemo(() => (isRecoveryMode ? "New Password" : "Password"), [isRecoveryMode]);
+  const heading = useMemo(() => {
+    if (mode === "login") return "Welcome back";
+    if (mode === "recovery") return "Create a new password";
+    return "Create your workspace account";
+  }, [mode]);
+  const subheading = useMemo(() => {
+    if (mode === "login") return "Sign in to continue managing schedules, reports, and agency operations.";
+    if (mode === "recovery") return "Set a new password to regain secure access to your workspace.";
+    return "Register your profile, then create a new agency or join an existing one with an invite code.";
+  }, [mode]);
 
   const u = (k) => (v) => {
     setErr("");
@@ -57,7 +69,9 @@ const AuthPage = ({ onLogin }) => {
       setInfo("Enter your new password to complete the reset.");
     }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
       if (event === "PASSWORD_RECOVERY") {
         setMode("recovery");
         setErr("");
@@ -171,6 +185,7 @@ const AuthPage = ({ onLogin }) => {
         });
 
         if (error) throw error;
+        if (typeof onLogin === "function") onLogin();
       } else if (mode === "recovery") {
         const { error } = await supabase.auth.updateUser({
           password: f.password,
@@ -243,13 +258,14 @@ const AuthPage = ({ onLogin }) => {
   const lightAuthThemeVars = {
     "--bg": AUTH_BG,
     "--bg2": "#ffffff",
-    "--bg3": "#f8fafc",
+    "--bg3": "#eef2ff",
     "--text": "#0f172a",
     "--text2": "#475569",
     "--text3": "#64748b",
     "--border": "rgba(15,23,42,.10)",
     "--border2": "rgba(15,23,42,.14)",
     "--accent": "#d97706",
+    "--accent2": "#7c3aed",
     "--red": "#dc2626",
     "--green": "#16a34a",
     "--shadow": "0 20px 50px rgba(15,23,42,.10)",
@@ -260,91 +276,191 @@ const AuthPage = ({ onLogin }) => {
       style={{
         ...lightAuthThemeVars,
         minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
+        width: "100%",
         background: AUTH_BG,
-        padding: 20,
         color: "var(--text)",
+        padding: "clamp(72px, 10vw, 112px) clamp(24px, 5vw, 40px) clamp(96px, 12vw, 140px)",
+        boxSizing: "border-box",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
       }}
     >
-      <div style={{ width: "100%", maxWidth: 420 }}>
-        <div style={{ textAlign: "center", marginBottom: 36 }}>
+      <section
+        style={{
+          width: "100%",
+          maxWidth: 468,
+          margin: "0 auto",
+          paddingBottom: 24,
+        }}
+      >
+        <div
+          style={{
+            width: "100%",
+            borderRadius: 28,
+            background: "#ffffff",
+            border: "1px solid rgba(15,23,42,.08)",
+            boxShadow: "0 25px 70px rgba(15,23,42,.10)",
+            padding: "clamp(28px, 3.5vw, 36px)",
+          }}
+        >
           <div
             style={{
-              display: "inline-flex",
+              display: "flex",
+              flexDirection: "column",
               alignItems: "center",
-              gap: 11,
-              background: "#ffffff",
-              border: "1px solid rgba(15,23,42,.10)",
-              borderRadius: 14,
-              padding: "11px 18px",
+              textAlign: "center",
               marginBottom: 22,
-              boxShadow: "0 10px 30px rgba(15,23,42,.06)",
             }}
           >
             <div
               style={{
-                width: 34,
-                height: 34,
-                background: "var(--accent)",
-                borderRadius: 9,
-                display: "flex",
+                display: "inline-flex",
                 alignItems: "center",
-                justifyContent: "center",
-                fontSize: 17,
+                gap: 16,
+                padding: "16px 22px",
+                borderRadius: 22,
+                background: "#ffffff",
+                border: "1px solid rgba(15,23,42,.08)",
+                boxShadow: "0 12px 30px rgba(15,23,42,.05)",
+                marginBottom: 18,
+                width: "100%",
+                maxWidth: 440,
+                justifyContent: "flex-start",
               }}
             >
-              📡
-            </div>
-            <div>
               <div
                 style={{
-                  fontFamily: "'Syne',sans-serif",
-                  fontWeight: 800,
-                  fontSize: 17,
+                  width: 56,
+                  height: 56,
+                  borderRadius: 14,
+                  background: "#d97706",
+                  color: "#ffffff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 26,
+                  lineHeight: 1,
+                  flexShrink: 0,
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,.18)",
                 }}
               >
-                MediaDesk Pro
+                📡
               </div>
-              <div style={{ fontSize: 10, color: "var(--text3)" }}>
-                MEDIA SCHEDULE PLATFORM
+              <div style={{ textAlign: "left", minWidth: 0 }}>
+                <div
+                  style={{
+                    fontFamily: "'Syne',sans-serif",
+                    fontWeight: 800,
+                    fontSize: 18,
+                    letterSpacing: "-.03em",
+                    lineHeight: 1.05,
+                    color: "#0f172a",
+                  }}
+                >
+                  MediaDesk Pro
+                </div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    letterSpacing: ".08em",
+                    textTransform: "uppercase",
+                    color: "#64748b",
+                  }}
+                >
+                  Media Schedule Platform
+                </div>
               </div>
             </div>
+
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "7px 12px",
+                borderRadius: 999,
+                background: "rgba(124,58,237,.08)",
+                color: "#6d28d9",
+                fontSize: 11,
+                fontWeight: 800,
+                letterSpacing: ".08em",
+                textTransform: "uppercase",
+                marginBottom: 14,
+              }}
+            >
+              Secure access
+            </div>
+
+            <h2
+              style={{
+                margin: 0,
+                maxWidth: 320,
+                fontFamily: "'Syne',sans-serif",
+                fontWeight: 800,
+                fontSize: 20,
+                lineHeight: 1.15,
+                letterSpacing: "-.03em",
+                textAlign: "center",
+              }}
+            >
+              {heading}
+            </h2>
+            <p
+              style={{
+                margin: "10px 0 0",
+                maxWidth: 340,
+                color: "var(--text2)",
+                fontSize: 14,
+                lineHeight: 1.6,
+                textAlign: "center",
+              }}
+            >
+              {subheading}
+            </p>
           </div>
 
-          <h1
+          <div
             style={{
-              fontFamily: "'Syne',sans-serif",
-              fontWeight: 800,
-              fontSize: 26,
-              letterSpacing: "-.03em",
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 10,
+              marginBottom: 18,
             }}
           >
-            {mode === "login" ? "Welcome back" : mode === "recovery" ? "Reset password" : "Create account"}
-          </h1>
-          <p style={{ color: "var(--text2)", marginTop: 7, fontSize: 14 }}>
-            {mode === "login"
-              ? "Sign in to your agency workspace"
-              : mode === "recovery"
-                ? "Set a new password for your account"
-                : "Create an account and either create a brand-new agency or join an existing one"}
-          </p>
-        </div>
+            {[
+              { key: "login", label: "Sign In" },
+              { key: "register", label: "Register" },
+            ].map((item) => {
+              const active = mode === item.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => switchMode(item.key)}
+                  style={{
+                    border: active ? "1px solid rgba(124,58,237,.32)" : "1px solid rgba(15,23,42,.08)",
+                    background: active ? "linear-gradient(135deg, rgba(124,58,237,.10), rgba(217,119,6,.08))" : "rgba(248,250,252,.85)",
+                    color: active ? "#5b21b6" : "var(--text2)",
+                    borderRadius: 14,
+                    padding: "12px 10px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    transition: "all .2s ease",
+                  }}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
 
-        <div
-          style={{
-            background: "#ffffff",
-            border: "1px solid rgba(15,23,42,.08)",
-            borderRadius: 22,
-            padding: 20,
-            boxShadow: "0 24px 60px rgba(15,23,42,.10)",
-          }}
-        >
-          <Card style={{ background: "transparent", boxShadow: "none", border: "none", padding: 0 }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {mode === "register" && (
-                <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingInline: 2 }}>
+            {isRegisterMode && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                   <Field
                     label="Full Name"
                     value={f.name}
@@ -356,203 +472,292 @@ const AuthPage = ({ onLogin }) => {
                     label="Job Title"
                     value={f.title}
                     onChange={u("title")}
-                    placeholder="Media Buyer / Account Executive"
+                    placeholder="Media Buyer"
                   />
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setErr("");
-                        setInfo("");
-                        setExistingAgencyMatch(null);
-                        setF((p) => ({ ...p, agencyMode: "create", agencyCode: p.agencyCode || "" }));
-                      }}
-                      style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "create" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "create" ? "rgba(217,119,6,.10)" : "#ffffff", color: f.agencyMode === "create" ? "var(--accent)" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
-                    >
-                      Create New Agency
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setErr("");
-                        setInfo("");
-                        setF((p) => ({ ...p, agencyMode: "join", agency: p.agency || "" }));
-                      }}
-                      style={{ padding: "11px 12px", borderRadius: 10, border: f.agencyMode === "join" ? "1px solid var(--accent)" : "1px solid var(--border)", background: f.agencyMode === "join" ? "rgba(217,119,6,.10)" : "#ffffff", color: f.agencyMode === "join" ? "var(--accent)" : "var(--text2)", cursor: "pointer", fontWeight: 600 }}
-                    >
-                      Join With Invite Code
-                    </button>
-                  </div>
-                  {f.agencyMode === "create" ? (
-                    <>
-                      <Field
-                        label="Agency Name"
-                        value={f.agency}
-                        onChange={(value) => {
-                          setErr("");
-                          setInfo("");
-                          u("agency")(value);
-                        }}
-                        placeholder="Apex Media Ltd"
-                        required
-                        note={agencyCheckLoading ? "Checking whether this agency already exists..." : "Only use Create New Agency for a brand-new workspace."}
-                      />
-                      {existingAgencyMatch ? (
-                        <div style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.28)", borderRadius: 10, padding: "11px 13px", display: "flex", flexDirection: "column", gap: 8 }}>
-                          <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700 }}>This agency already exists</div>
-                          <div style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.5 }}>
-                            <strong style={{ color: "var(--text)" }}>{existingAgencyMatch.name}</strong> already has a workspace. Agency already existing contact admin.
-                          </div>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 10,
+                    padding: 8,
+                    borderRadius: 16,
+                    background: "rgba(15,23,42,.03)",
+                    border: "1px solid rgba(15,23,42,.06)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErr("");
+                      setInfo("");
+                      setExistingAgencyMatch(null);
+                      setF((p) => ({ ...p, agencyMode: "create", agencyCode: p.agencyCode || "" }));
+                    }}
+                    style={{
+                      padding: "13px 12px",
+                      borderRadius: 14,
+                      border: f.agencyMode === "create" ? "1px solid rgba(217,119,6,.28)" : "1px solid transparent",
+                      background: f.agencyMode === "create" ? "rgba(217,119,6,.10)" : "transparent",
+                      color: f.agencyMode === "create" ? "#b45309" : "var(--text2)",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Create New Agency
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErr("");
+                      setInfo("");
+                      setF((p) => ({ ...p, agencyMode: "join", agency: p.agency || "" }));
+                    }}
+                    style={{
+                      padding: "13px 12px",
+                      borderRadius: 14,
+                      border: f.agencyMode === "join" ? "1px solid rgba(124,58,237,.24)" : "1px solid transparent",
+                      background: f.agencyMode === "join" ? "rgba(124,58,237,.08)" : "transparent",
+                      color: f.agencyMode === "join" ? "#6d28d9" : "var(--text2)",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Join With Invite Code
+                  </button>
+                </div>
+
+                {f.agencyMode === "create" ? (
+                  <>
                     <Field
-                      label="Agency Invite Code"
-                      value={f.agencyCode}
+                      label="Agency Name"
+                      value={f.agency}
                       onChange={(value) => {
                         setErr("");
                         setInfo("");
-                        u("agencyCode")(value);
+                        u("agency")(value);
                       }}
-                      placeholder="QVT-7K4P"
+                      placeholder="Apex Media Ltd"
                       required
-                      note="Ask your agency admin for the invite code."
+                      note={agencyCheckLoading ? "Checking whether this agency already exists..." : "Only use this when creating a brand-new workspace."}
                     />
-                  )}
+                    {existingAgencyMatch ? (
+                      <div
+                        style={{
+                          background: "rgba(239,68,68,.07)",
+                          border: "1px solid rgba(239,68,68,.24)",
+                          borderRadius: 16,
+                          padding: "13px 14px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, color: "var(--red)", fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                          Agency already exists
+                        </div>
+                        <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
+                          <strong style={{ color: "var(--text)" }}>{existingAgencyMatch.name}</strong> already has a workspace. Contact your admin for access instead of creating another agency.
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
                   <Field
-                    label="Phone Number"
-                    type="tel"
-                    value={f.phone}
-                    onChange={u("phone")}
-                    placeholder="+234 800 000 0000"
-                  />
-                </>
-              )}
-
-              <Field
-                label="Email"
-                type="email"
-                value={f.email}
-                onChange={u("email")}
-                placeholder="you@agency.com"
-                required
-              />
-
-              <Field
-                label={passwordLabel}
-                type="password"
-                value={f.password}
-                onChange={u("password")}
-                placeholder="••••••••"
-                required
-              />
-
-              {(mode === "register" || mode === "recovery") && (
-                <Field
-                  label="Confirm Password"
-                  type="password"
-                  value={f.confirm}
-                  onChange={u("confirm")}
-                  placeholder="••••••••"
-                />
-              )}
-
-              {mode === "login" && (
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -4 }}>
-                  <button
-                    type="button"
-                    onClick={handleForgotPassword}
-                    disabled={resetLoading || loading}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "var(--accent)",
-                      fontWeight: 600,
-                      cursor: resetLoading || loading ? "wait" : "pointer",
-                      fontSize: 12,
-                      padding: 0,
+                    label="Agency Invite Code"
+                    value={f.agencyCode}
+                    onChange={(value) => {
+                      setErr("");
+                      setInfo("");
+                      u("agencyCode")(value);
                     }}
-                  >
-                    {resetLoading ? "Sending reset link..." : "Forgot password?"}
-                  </button>
-                </div>
-              )}
+                    placeholder="QVT-7K4P"
+                    required
+                    note="Ask your agency admin for the invite code."
+                  />
+                )}
 
-              {info && (
-                <div
-                  style={{
-                    background: "rgba(34,197,94,.1)",
-                    border: "1px solid rgba(34,197,94,.3)",
-                    borderRadius: 8,
-                    padding: "9px 13px",
-                    color: "#15803d",
-                    fontSize: 12,
-                  }}
-                >
-                  {info}
-                </div>
-              )}
+                <Field
+                  label="Phone Number"
+                  type="tel"
+                  value={f.phone}
+                  onChange={u("phone")}
+                  placeholder="+234 800 000 0000"
+                />
+              </>
+            )}
 
-              {err && (
-                <div
-                  style={{
-                    background: "rgba(239,68,68,.1)",
-                    border: "1px solid rgba(239,68,68,.3)",
-                    borderRadius: 8,
-                    padding: "9px 13px",
-                    color: "var(--red)",
-                    fontSize: 12,
-                  }}
-                >
-                  {err}
-                </div>
-              )}
+            <Field
+              label="Email"
+              type="email"
+              value={f.email}
+              onChange={u("email")}
+              placeholder="you@agency.com"
+              required
+            />
 
-              <Btn
-                size="lg"
-                onClick={submit}
-                loading={loading || (mode === "register" && f.agencyMode === "create" && agencyCheckLoading)}
-                disabled={mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch}
-                style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
-              >
-                {mode === "login"
-                  ? "Sign In →"
-                  : mode === "recovery"
-                    ? "Update Password →"
-                    : (existingAgencyMatch && f.agencyMode === "create" ? "Already Existing Contact Admin" : "Create Account →")}
-              </Btn>
+            <Field
+              label={passwordLabel}
+              type="password"
+              value={f.password}
+              onChange={u("password")}
+              placeholder="••••••••"
+              required
+            />
 
-              <p style={{ textAlign: "center", color: "var(--text2)", fontSize: 13 }}>
-                {mode === "login"
-                  ? "No account? "
-                  : mode === "recovery"
-                    ? "Back to "
-                    : "Have an account? "}
+            {(isRegisterMode || isRecoveryMode) && (
+              <Field
+                label="Confirm Password"
+                type="password"
+                value={f.confirm}
+                onChange={u("confirm")}
+                placeholder="••••••••"
+              />
+            )}
+
+            {mode === "recovery" && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: -2 }}>
+                <div style={{ fontSize: 12, color: "var(--text3)" }}>Open the reset link from your email, then set your new password here.</div>
                 <button
-                  onClick={() => {
-                    if (mode === "login") {
-                      switchMode("register");
-                    } else {
-                      switchMode("login");
-                    }
-                  }}
+                  type="button"
+                  onClick={() => switchMode("login")}
                   style={{
                     background: "none",
                     border: "none",
-                    color: "var(--accent)",
-                    fontWeight: 600,
+                    color: "#7c3aed",
+                    fontWeight: 700,
                     cursor: "pointer",
-                    fontSize: 13,
+                    fontSize: 12,
+                    padding: 0,
                   }}
                 >
-                  {mode === "login" ? "Register" : "Sign In"}
+                  Back to sign in
                 </button>
-              </p>
+              </div>
+            )}
+
+            {mode === "login" && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: -2 }}>
+                <div style={{ fontSize: 11, color: "var(--text3)" }}>Use the email linked to your agency workspace.</div>
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={resetLoading || loading}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#7c3aed",
+                    fontWeight: 700,
+                    cursor: resetLoading || loading ? "wait" : "pointer",
+                    fontSize: 11,
+                    padding: 0,
+                  }}
+                >
+                  {resetLoading ? "Sending reset link..." : "Forgot password?"}
+                </button>
+              </div>
+            )}
+
+            {info && (
+              <div
+                style={{
+                  background: "rgba(34,197,94,.10)",
+                  border: "1px solid rgba(34,197,94,.24)",
+                  borderRadius: 16,
+                  padding: "12px 14px",
+                  color: "#166534",
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                }}
+              >
+                {info}
+              </div>
+            )}
+
+            {err && (
+              <div
+                style={{
+                  background: "rgba(239,68,68,.08)",
+                  border: "1px solid rgba(239,68,68,.24)",
+                  borderRadius: 16,
+                  padding: "12px 14px",
+                  color: "var(--red)",
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                }}
+              >
+                {err}
+              </div>
+            )}
+
+            <Btn
+              size="lg"
+              onClick={submit}
+              loading={loading || (mode === "register" && f.agencyMode === "create" && agencyCheckLoading)}
+              disabled={mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch}
+              style={{
+                width: "100%",
+                justifyContent: "center",
+                marginTop: 6,
+                minHeight: 52,
+                borderRadius: 16,
+                fontWeight: 800,
+                letterSpacing: ".01em",
+              }}
+            >
+              {mode === "login"
+                ? "Sign In"
+                : mode === "recovery"
+                  ? "Update Password"
+                  : existingAgencyMatch && f.agencyMode === "create"
+                    ? "Already Existing Contact Admin"
+                    : "Create Account"}
+            </Btn>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto 1fr",
+                alignItems: "center",
+                gap: 12,
+                marginTop: 4,
+                color: "var(--text3)",
+                fontSize: 11,
+              }}
+            >
+              <span style={{ height: 1, background: "rgba(15,23,42,.08)" }} />
+              <span>Quick switch</span>
+              <span style={{ height: 1, background: "rgba(15,23,42,.08)" }} />
             </div>
-          </Card>
+
+            <p style={{ textAlign: "center", color: "var(--text2)", fontSize: 13, margin: 0 }}>
+              {mode === "login" ? "No account yet? " : mode === "recovery" ? "Back to " : "Already have an account? "}
+              <button
+                type="button"
+                onClick={() => {
+                  if (mode === "login") {
+                    switchMode("register");
+                  } else {
+                    switchMode("login");
+                  }
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#7c3aed",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  padding: 0,
+                }}
+              >
+                {mode === "login" ? "Register" : "Sign In"}
+              </button>
+            </p>
+          </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 };

@@ -199,6 +199,60 @@ export default function App() {
     setTheme(getDefaultTheme(user?.id || null));
   }, [user?.id]);
 
+  useEffect(() => {
+    const root = document.getElementById("root");
+    const html = document.documentElement;
+    const body = document.body;
+
+    const previous = {
+      htmlWidth: html.style.width,
+      htmlMargin: html.style.margin,
+      htmlPadding: html.style.padding,
+      bodyWidth: body.style.width,
+      bodyMargin: body.style.margin,
+      bodyPadding: body.style.padding,
+      bodyOverflowX: body.style.overflowX,
+      rootWidth: root?.style.width || "",
+      rootMaxWidth: root?.style.maxWidth || "",
+      rootMargin: root?.style.margin || "",
+      rootPadding: root?.style.padding || "",
+    };
+
+    html.style.width = "100%";
+    html.style.margin = "0";
+    html.style.padding = "0";
+
+    body.style.width = "100%";
+    body.style.margin = "0";
+    body.style.padding = "0";
+    body.style.overflowX = "hidden";
+
+    if (root) {
+      root.style.width = "100%";
+      root.style.maxWidth = "100%";
+      root.style.margin = "0";
+      root.style.padding = "0";
+    }
+
+    return () => {
+      html.style.width = previous.htmlWidth;
+      html.style.margin = previous.htmlMargin;
+      html.style.padding = previous.htmlPadding;
+
+      body.style.width = previous.bodyWidth;
+      body.style.margin = previous.bodyMargin;
+      body.style.padding = previous.bodyPadding;
+      body.style.overflowX = previous.bodyOverflowX;
+
+      if (root) {
+        root.style.width = previous.rootWidth;
+        root.style.maxWidth = previous.rootMaxWidth;
+        root.style.margin = previous.rootMargin;
+        root.style.padding = previous.rootPadding;
+      }
+    };
+  }, []);
+
   const setAppSettings = useCallback((value) => {
     _setAppSettings(prev => {
       const next = typeof value === "function" ? value(prev) : value;
@@ -749,7 +803,7 @@ if (!authReady) {
           justifyContent: "center",
           background: "var(--bg)",
           color: "var(--text)",
-          fontFamily: "'Syne',sans-serif",
+          fontFamily: "var(--font-heading)",
           fontWeight: 700,
         }}
       >
@@ -773,9 +827,9 @@ if (!user) {
   return (
     <>
       <GlobalStyle theme={theme} />
-      <div style={{ display: "flex", minHeight: "100vh" }}>
+      <div style={{ display: "flex", minHeight: "100vh", width: "100%", maxWidth: "100%", overflowX: "hidden" }}>
         <Sidebar page={page} setPage={setPage} user={user} onLogout={handleLogout} collapsed={collapsed} setCollapsed={setCollapsed} theme={theme} toggleTheme={toggleTheme} unreadNotifications={unreadNotifications} />
-        <main style={{ flex: 1, overflowY: "auto", padding: "28px 28px 52px", position: "relative" }}>
+        <main style={{ flex: 1, minWidth: 0, width: "100%", overflowY: "auto", overflowX: "hidden", padding: "28px 28px 52px", position: "relative", boxSizing: "border-box" }}>
           <TopRightNotificationsButton count={unreadNotifications} onClick={() => setAlertsOpen(true)} />
           {alertsOpen && (
             <Modal title="Workspace Alerts" onClose={() => setAlertsOpen(false)} width={560}>
@@ -787,7 +841,7 @@ if (!user) {
                     <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                       <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--bg3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{alert.icon}</div>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>{alert.title}</div>
+                        <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 14 }}>{alert.title}</div>
                         <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 4 }}>{alert.message}</div>
                       </div>
                       {alert.isUnread ? <Badge color="accent">New</Badge> : null}

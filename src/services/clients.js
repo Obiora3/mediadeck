@@ -1,26 +1,46 @@
 import { supabase } from '../lib/supabase';
 
-export const fetchClientsFromSupabase = async () => {
+const clientListSelect = `
+  id,
+  agency_id,
+  name,
+  industry,
+  contact,
+  email,
+  phone,
+  address,
+  brands,
+  is_archived,
+  created_at,
+  updated_at
+`;
+
+const mapClientFromSupabase = (c) => ({
+  id: c.id,
+  name: c.name || '',
+  industry: c.industry || '',
+  contact: c.contact || '',
+  email: c.email || '',
+  phone: c.phone || '',
+  address: c.address || '',
+  brands: c.brands || '',
+  archivedAt: c.is_archived ? (c.updated_at ? new Date(c.updated_at).getTime() : Date.now()) : null,
+  createdAt: c.created_at ? new Date(c.created_at).getTime() : Date.now(),
+  updatedAt: c.updated_at ? new Date(c.updated_at).getTime() : Date.now(),
+});
+
+export const fetchClientsFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
+
   const { data, error } = await supabase
     .from('clients')
-    .select('*')
+    .select(clientListSelect)
+    .eq('agency_id', agencyId)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
 
-  return (data || []).map((c) => ({
-    id: c.id,
-    name: c.name || '',
-    industry: c.industry || '',
-    contact: c.contact || '',
-    email: c.email || '',
-    phone: c.phone || '',
-    address: c.address || '',
-    brands: c.brands || '',
-    archivedAt: c.is_archived ? (c.updated_at ? new Date(c.updated_at).getTime() : Date.now()) : null,
-    createdAt: c.created_at ? new Date(c.created_at).getTime() : Date.now(),
-    updatedAt: c.updated_at ? new Date(c.updated_at).getTime() : Date.now(),
-  }));
+  return (data || []).map(mapClientFromSupabase);
 };
 
 export const createClientInSupabase = async (agencyId, userId, form) => {
@@ -40,24 +60,12 @@ export const createClientInSupabase = async (agencyId, userId, form) => {
       brands: form.brands || null,
       is_archived: false,
     }])
-    .select()
+    .select(clientListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    industry: data.industry || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    address: data.address || '',
-    brands: data.brands || '',
-    archivedAt: null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapClientFromSupabase(data);
 };
 
 export const updateClientInSupabase = async (clientId, form) => {
@@ -73,24 +81,12 @@ export const updateClientInSupabase = async (clientId, form) => {
       brands: form.brands || null,
     })
     .eq('id', clientId)
-    .select()
+    .select(clientListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    industry: data.industry || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    address: data.address || '',
-    brands: data.brands || '',
-    archivedAt: data.is_archived ? (data.updated_at ? new Date(data.updated_at).getTime() : Date.now()) : null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapClientFromSupabase(data);
 };
 
 export const archiveClientInSupabase = async (clientId) => {
@@ -98,24 +94,12 @@ export const archiveClientInSupabase = async (clientId) => {
     .from('clients')
     .update({ is_archived: true })
     .eq('id', clientId)
-    .select()
+    .select(clientListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    industry: data.industry || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    address: data.address || '',
-    brands: data.brands || '',
-    archivedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapClientFromSupabase(data);
 };
 
 export const restoreClientInSupabase = async (clientId) => {
@@ -123,22 +107,10 @@ export const restoreClientInSupabase = async (clientId) => {
     .from('clients')
     .update({ is_archived: false })
     .eq('id', clientId)
-    .select()
+    .select(clientListSelect)
     .single();
 
   if (error) throw error;
 
-  return {
-    id: data.id,
-    name: data.name || '',
-    industry: data.industry || '',
-    contact: data.contact || '',
-    email: data.email || '',
-    phone: data.phone || '',
-    address: data.address || '',
-    brands: data.brands || '',
-    archivedAt: null,
-    createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
-    updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
-  };
+  return mapClientFromSupabase(data);
 };

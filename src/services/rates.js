@@ -1,6 +1,5 @@
 import { supabase } from '../lib/supabase';
 
-
 const normRateText = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const normRateTimeBelt = (value) => normRateText(value).replace(/\s*[-–—]\s*/g, '-');
 const normRateDuration = (value) => String(value ?? '30').trim() || '30';
@@ -14,6 +13,26 @@ const makeRateDuplicateKey = ({ vendorId = '', mediaType = '', programme = '', t
     normRateDuration(duration),
   ].join('|')
 );
+
+const rateListSelect = `
+  id,
+  agency_id,
+  vendor_id,
+  media_type,
+  programme,
+  time_belt,
+  duration,
+  rate_per_spot,
+  discount,
+  commission,
+  vat_rate,
+  notes,
+  campaign_id,
+  client_id,
+  is_archived,
+  created_at,
+  updated_at
+`;
 
 const fetchExistingActiveRatesForAgency = async (agencyId, excludeRateId = null) => {
   let query = supabase
@@ -48,10 +67,13 @@ const mapRateFromSupabase = (data) => ({
   updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
 });
 
-export const fetchRatesFromSupabase = async () => {
+export const fetchRatesFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
+
   const { data, error } = await supabase
     .from('rates')
-    .select('*')
+    .select(rateListSelect)
+    .eq('agency_id', agencyId)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -109,7 +131,7 @@ export const createRatesInSupabase = async (agencyId, userId, hdr, validRows) =>
   const { data, error } = await supabase
     .from('rates')
     .insert(payload)
-    .select();
+    .select(rateListSelect);
 
   if (error) throw error;
   return (data || []).map(mapRateFromSupabase);
@@ -161,7 +183,7 @@ export const updateRateInSupabase = async (rateId, hdr, row) => {
       notes: hdr.notes || null,
     })
     .eq('id', rateId)
-    .select()
+    .select(rateListSelect)
     .single();
 
   if (error) throw error;
@@ -173,7 +195,7 @@ export const archiveRateInSupabase = async (rateId) => {
     .from('rates')
     .update({ is_archived: true })
     .eq('id', rateId)
-    .select()
+    .select(rateListSelect)
     .single();
 
   if (error) throw error;
@@ -185,7 +207,7 @@ export const restoreRateInSupabase = async (rateId) => {
     .from('rates')
     .update({ is_archived: false })
     .eq('id', rateId)
-    .select()
+    .select(rateListSelect)
     .single();
 
   if (error) throw error;
@@ -253,7 +275,7 @@ export const importRatesInSupabase = async (agencyId, userId, newRates) => {
   const { data, error } = await supabase
     .from('rates')
     .insert(payload)
-    .select();
+    .select(rateListSelect);
 
   if (error) throw error;
   return {

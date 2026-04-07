@@ -1,11 +1,19 @@
 import { supabase } from "../lib/supabase";
 import { DEFAULT_APP_SETTINGS, mergeAppSettings } from "../constants/appDefaults";
 
+const appSettingsSelect = `
+  agency_id,
+  vat_rate,
+  round_to_whole_naira,
+  session_hours,
+  mpo_terms
+`;
+
 export const fetchAppSettingsFromSupabase = async (agencyId) => {
   if (!agencyId) return mergeAppSettings();
   const { data, error } = await supabase
     .from("app_settings")
-    .select("*")
+    .select(appSettingsSelect)
     .eq("agency_id", agencyId)
     .maybeSingle();
   if (error) throw error;
@@ -29,7 +37,7 @@ export const saveAppSettingsToSupabase = async (agencyId, settings) => {
   const { data, error } = await supabase
     .from("app_settings")
     .upsert(payload, { onConflict: "agency_id" })
-    .select()
+    .select(appSettingsSelect)
     .single();
   if (error) throw error;
   return mergeAppSettings({
