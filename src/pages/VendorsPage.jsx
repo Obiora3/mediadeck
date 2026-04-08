@@ -6,8 +6,8 @@ import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
 import { activeOnly, archivedOnly, isArchived } from "../utils/records";
 import { fmtN } from "../utils/formatters";
-import { hasPermission, readOnlyMessage, formatRoleLabel } from "../constants/roles";
-import { createVendorInSupabase, updateVendorInSupabase, archiveVendorInSupabase, restoreVendorInSupabase } from "../services/vendors";
+import { hasPermission, readOnlyMessage, formatRoleLabel, isAdmin, adminOnlyMessage } from "../constants/roles";
+import { createVendorInSupabase, updateVendorInSupabase, archiveVendorInSupabase, restoreVendorInSupabase, deleteVendorInSupabase } from "../services/vendors";
 import { Card, Field, Btn } from "../components/ui/primitives";
 
 /* ── VENDORS ────────────────────────────────────────────── */
@@ -22,6 +22,7 @@ const VendorsPage = ({ vendors, setVendors, user }) => {
   const u = k => v => setF(p => ({ ...p, [k]: v }));
   const mediaTypes = ["Television","Radio","Print","Digital/Online","Out-of-Home (OOH)","Cinema","Podcast","Social Media"];
   const canManage = hasPermission(user, "manageVendors");
+  const canDelete = isAdmin(user);
   const save = async () => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
   if (!f.name || !f.type) {
@@ -75,6 +76,17 @@ const restore = async (id) => {
     setToast({ msg: e.message || "Failed to restore vendor.", type: "error" });
   }
 };
+const hardDelete = async (id, name) => {
+  if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
+  try {
+    await deleteVendorInSupabase(id);
+    setVendors(v => v.filter(x => x.id !== id));
+    setToast({ msg: `Vendor "${name || "record"}" deleted permanently.`, type: "success" });
+    setConfirm(null);
+  } catch (e) {
+    setToast({ msg: e.message || "Failed to delete vendor.", type: "error" });
+  }
+};
   const visible = viewMode === "archived" ? archivedOnly(vendors) : viewMode === "all" ? vendors : activeOnly(vendors);
   const filtered = visible.filter(v => `${v.name} ${v.type}`.toLowerCase().includes(search.toLowerCase()));
   const typeIcon = t => ({ Television: "📺", Radio: "📻", Print: "📰", "Digital/Online": "💻", "Out-of-Home (OOH)": "🪧", Cinema: "🎬", Podcast: "🎙", "Social Media": "📱" }[t] || "📡");
@@ -101,6 +113,7 @@ const restore = async (id) => {
                 <div style={{ display: "flex", gap: 5 }}>
                   {canManage && <Btn variant="ghost" size="sm" onClick={() => { setF({ name: v.name, type: v.type, contact: v.contact||"", email: v.email||"", phone: v.phone||"", location: v.location||"", rate: v.rate||"", discount: v.discount||"", commission: v.commission||"", notes: v.notes||"" }); setModal(v); }}>✏️</Btn>}
                   {canManage && (isArchived(v) ? <Btn variant="success" size="sm" onClick={() => restore(v.id)}>↩</Btn> : <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive "${v.name}"? Existing reports and MPO links will stay intact.`, onYes: () => del(v.id) })}>🗄</Btn>)}
+                  {canDelete && <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Delete "${v.name}" permanently? This cannot be undone.`, onYes: () => hardDelete(v.id, v.name) })}>🗑</Btn>}
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>

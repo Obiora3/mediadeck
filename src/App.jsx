@@ -279,6 +279,7 @@ export default function App() {
   const [members, setMembers] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
+  const [settingsOpenSection, setSettingsOpenSection] = useState(null);
 
 // MPOs now come from Supabase
 
@@ -624,6 +625,11 @@ export default function App() {
 
   const unreadNotifications = notifications.filter(notification => !notification.readAt).length;
 
+  const openNotificationsSettings = () => {
+    setSettingsOpenSection({ section: "notifications", key: Date.now() });
+    setPage("settings");
+  };
+
   const workspaceAlerts = (notifications || []).slice(0, 12).map(notification => ({
     id: notification.id,
     icon: notification.category === "finance" ? "💳" : notification.category === "reconciliation" ? "📑" : notification.category === "proof" ? "📎" : "🔔",
@@ -791,6 +797,12 @@ export default function App() {
 
   const handleUserUpdate = (u) => setUser(prev => ({ ...prev, ...u }));
 
+  useEffect(() => {
+    if (page !== "settings" && settingsOpenSection) {
+      setSettingsOpenSection(null);
+    }
+  }, [page, settingsOpenSection]);
+
 if (!authReady) {
   return (
     <>
@@ -849,12 +861,12 @@ if (!user) {
                   </Card>
                 ))}
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <Btn variant="ghost" onClick={() => { setAlertsOpen(false); setPage("settings"); }}>Open Inbox</Btn>
+                  <Btn variant="ghost" onClick={() => { setAlertsOpen(false); openNotificationsSettings(); }}>Open Inbox</Btn>
                 </div>
               </div>
             </Modal>
           )}
-          {page === "dashboard"  && <Dashboard user={user} {...pp} setPage={setPage} onOpenNotifications={() => setPage("settings")} />}
+          {page === "dashboard"  && <Dashboard user={user} {...pp} setPage={setPage} onOpenNotifications={openNotificationsSettings} />}
           {page === "vendors"    && <VendorsPage {...pp} user={user} />}
           {page === "clients"    && <ClientsPage {...pp} user={user} />}
           {page === "campaigns"  && <CampaignsPage {...pp} user={user} />}
@@ -862,7 +874,7 @@ if (!user) {
           {page === "finance"    && <FinancePage user={user} vendors={vendors} clients={clients} campaigns={campaigns} mpos={mpos} receivables={receivables} receivablesMeta={receivablesSync} onSaveReceivable={handleSaveReceivableRecord} onRemoveReceivable={handleRemoveReceivableRecord} onLogReceivablePayment={handleLogReceivablePayment} onUpdateReceivableStatus={handleUpdateReceivableStatus} />}
           {page === "mpo"        && <MPOPage {...pp} user={user} appSettings={appSettings} />}
           {page === "reports"    && <ReportsPage {...pp} activeOnly={activeOnly} fmtN={fmtN} MPO_STATUS_LABELS={MPO_STATUS_LABELS} PrintPreview={PrintPreview} buildCSV={buildCSV} />}
-          {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} />}
+          {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} initialSectionRequest={settingsOpenSection} />}
         </main>
       </div>
     </>

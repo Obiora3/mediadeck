@@ -1,8 +1,11 @@
 import { supabase } from '../lib/supabase';
+import { ensureVendorExistsInSupabase, normalizeVendorName } from './vendors';
 
 const normRateText = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const normRateTimeBelt = (value) => normRateText(value).replace(/\s*[-–—]\s*/g, '-');
 const normRateDuration = (value) => String(value ?? '30').trim() || '30';
+const normalizeImportVendorName = (value) => normalizeVendorName(value);
+const autoCreatedVendorNote = 'Auto-created from media rates import.';
 
 const makeRateDuplicateKey = ({ vendorId = '', mediaType = '', programme = '', timeBelt = '', duration = '30' }) => (
   [
@@ -228,11 +231,46 @@ export const importRatesInSupabase = async (agencyId, userId, newRates) => {
     }))
   );
 
+  const vendorCache = new Map();
+  const createdVendorsMap = new Map();
+  const preparedRates = [];
+
+  for (const rawRate of newRates) {
+    let vendorId = rawRate.vendorId || '';
+    const vendorName = rawRate._vendorName || rawRate.vendorName || '';
+
+    if (!vendorId && normalizeImportVendorName(vendorName)) {
+      const cacheKey = normalizeImportVendorName(vendorName);
+      if (!vendorCache.has(cacheKey)) {
+        vendorCache.set(
+          cacheKey,
+          ensureVendorExistsInSupabase(agencyId, userId, vendorName, {
+            type: rawRate.mediaType || '',
+            discount: rawRate.discount || '',
+            commission: rawRate.commission || '',
+            notes: rawRate.notes || autoCreatedVendorNote,
+          })
+        );
+      }
+
+      const ensuredVendor = await vendorCache.get(cacheKey);
+      vendorId = ensuredVendor?.id || '';
+      if (ensuredVendor?.id) {
+        createdVendorsMap.set(ensuredVendor.id, ensuredVendor);
+      }
+    }
+
+    preparedRates.push({
+      ...rawRate,
+      vendorId,
+    });
+  }
+
   const seenInBatch = new Set();
   const duplicateRows = [];
   const uniqueRates = [];
 
-  for (const r of newRates) {
+  for (const r of preparedRates) {
     const key = makeRateDuplicateKey({
       vendorId: r.vendorId || '',
       mediaType: r.mediaType || '',
@@ -281,5 +319,17 @@ export const importRatesInSupabase = async (agencyId, userId, newRates) => {
   return {
     insertedRates: (data || []).map(mapRateFromSupabase),
     duplicateRows,
+    createdVendors: Array.from(createdVendorsMap.values()),
   };
+};
+
+
+export const deleteRateInSupabase = async (rateId) => {
+  const { error } = await supabase
+    .from('rates')
+    .delete()
+    .eq('id', rateId);
+
+  if (error) throw error;
+  return rateId;
 };

@@ -5,14 +5,15 @@ import Toast from "../components/Toast";
 import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
 import { activeOnly, archivedOnly, isArchived } from "../utils/records";
-import { hasPermission, readOnlyMessage, formatRoleLabel } from "../constants/roles";
-import { createClientInSupabase, updateClientInSupabase, archiveClientInSupabase, restoreClientInSupabase } from "../services/clients";
+import { hasPermission, readOnlyMessage, formatRoleLabel, isAdmin, adminOnlyMessage } from "../constants/roles";
+import { createClientInSupabase, updateClientInSupabase, archiveClientInSupabase, restoreClientInSupabase, deleteClientInSupabase } from "../services/clients";
 import { createAuditEventInSupabase } from "../services/notifications";
 import { Card, Field, Btn } from "../components/ui/primitives";
 
 /* ── CLIENTS ────────────────────────────────────────────── */
 const ClientsPage = ({ clients, setClients, user }) => {
   const canManage = hasPermission(user, "manageClients");
+  const canDelete = isAdmin(user);
   const [modal, setModal] = useState(null); const [search, setSearch] = useState(""); const [viewMode, setViewMode] = useState("active"); const [toast, setToast] = useState(null); const [confirm, setConfirm] = useState(null);
   const blank = { name: "", industry: "", contact: "", email: "", phone: "", address: "", brands: "" };
   const [f, setF] = useState(blank); const u = k => v => setF(p => ({ ...p, [k]: v }));
@@ -64,6 +65,19 @@ const ClientsPage = ({ clients, setClients, user }) => {
       setToast({ msg: e.message || "Failed to restore client.", type: "error" });
     }
   };
+  const hardDelete = async id => {
+    if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
+    try {
+      const target = clients.find(x => x.id === id);
+      await deleteClientInSupabase(id);
+      setClients(v => v.filter(x => x.id !== id));
+      createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "client", recordId: id, action: "deleted", actor: user, metadata: { name: target?.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
+      setToast({ msg: "Client deleted permanently.", type: "success" });
+      setConfirm(null);
+    } catch (e) {
+      setToast({ msg: e.message || "Failed to delete client.", type: "error" });
+    }
+  };
   const visible = viewMode === "archived" ? archivedOnly(clients) : viewMode === "all" ? clients : activeOnly(clients);
   const filtered = visible.filter(c => `${c.name} ${c.industry}`.toLowerCase().includes(search.toLowerCase()));
   return (
@@ -90,6 +104,7 @@ const ClientsPage = ({ clients, setClients, user }) => {
                   <div style={{ display: "flex", gap: 5 }}>
                     <Btn variant="ghost" size="sm" onClick={() => { setF({ name: c.name, industry: c.industry||"", contact: c.contact||"", email: c.email||"", phone: c.phone||"", address: c.address||"", brands: c.brands||"" }); setModal(c); }}>✏️</Btn>
                     {isArchived(c) ? <Btn variant="success" size="sm" onClick={() => restore(c.id)}>↩</Btn> : <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive "${c.name}"? Campaign history will be retained.`, onYes: () => del(c.id) })}>🗄</Btn>}
+                    {canDelete ? <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Delete "${c.name}" permanently? This cannot be undone.`, onYes: () => hardDelete(c.id) })}>🗑</Btn> : null}
                   </div>
                 </div>
                 {brands.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>{brands.map(b => <Badge key={b} color="green">{b}</Badge>)}</div>}

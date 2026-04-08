@@ -13,3 +13,6 @@ export const PERMISSIONS = {
 
 export const hasPermission = (user, key) => !!PERMISSIONS[normalizeRole(user?.role)]?.[key];
 export const readOnlyMessage = (user) => `Your role (${formatRoleLabel(user?.role)}) is read-only for this action.`;
+
+export const isAdmin = (user) => normalizeRole(user?.role) === "admin";
+export const adminOnlyMessage = (user) => `Only admins can permanently delete records. Your role is ${formatRoleLabel(user?.role)}.`;

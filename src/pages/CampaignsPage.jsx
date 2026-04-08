@@ -6,14 +6,15 @@ import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
 import { activeOnly, archivedOnly, isArchived } from "../utils/records";
 import { fmtN } from "../utils/formatters";
-import { hasPermission, readOnlyMessage, formatRoleLabel } from "../constants/roles";
-import { createCampaignInSupabase, updateCampaignInSupabase, archiveCampaignInSupabase, restoreCampaignInSupabase } from "../services/campaigns";
+import { hasPermission, readOnlyMessage, formatRoleLabel, isAdmin, adminOnlyMessage } from "../constants/roles";
+import { createCampaignInSupabase, updateCampaignInSupabase, archiveCampaignInSupabase, restoreCampaignInSupabase, deleteCampaignInSupabase } from "../services/campaigns";
 import { createAuditEventInSupabase } from "../services/notifications";
 import { Card, Field, Btn } from "../components/ui/primitives";
 
 /* ── CAMPAIGNS ──────────────────────────────────────────── */
 const CampaignsPage = ({ campaigns, setCampaigns, clients, user }) => {
   const canManage = hasPermission(user, "manageCampaigns");
+  const canDelete = isAdmin(user);
   const [modal, setModal] = useState(null); const [search, setSearch] = useState(""); const [filterStatus, setFilterStatus] = useState("all"); const [viewMode, setViewMode] = useState("active"); const [toast, setToast] = useState(null); const [confirm, setConfirm] = useState(null);
   const blank = { name: "", clientId: "", brand: "", objective: "", startDate: "", endDate: "", budget: "", status: "planning", medium: "", notes: "", materialList: [] };
   const [f, setF] = useState(blank); const u = k => v => setF(p => ({ ...p, [k]: v }));
@@ -63,6 +64,18 @@ const CampaignsPage = ({ campaigns, setCampaigns, clients, user }) => {
       setToast({ msg: e.message || "Failed to restore campaign.", type: "error" });
     }
   };
+  const hardDelete = async id => {
+    if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
+    try {
+      const target = campaigns.find(x => x.id === id);
+      await deleteCampaignInSupabase(id);
+      setCampaigns(v => v.filter(x => x.id !== id));
+      createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "campaign", recordId: id, action: "deleted", actor: user, metadata: { name: target?.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
+      setToast({ msg: "Campaign deleted permanently.", type: "success" }); setConfirm(null);
+    } catch (e) {
+      setToast({ msg: e.message || "Failed to delete campaign.", type: "error" });
+    }
+  };
   const clientOpts = activeOnly(clients).map(c => ({ value: c.id, label: c.name }));
   const clientBrands = f.clientId ? (clients.find(c => c.id === f.clientId)?.brands || "").split(",").map(b => b.trim()).filter(Boolean) : [];
   const visible = viewMode === "archived" ? archivedOnly(campaigns) : viewMode === "all" ? campaigns : activeOnly(campaigns);
@@ -107,6 +120,7 @@ const CampaignsPage = ({ campaigns, setCampaigns, clients, user }) => {
                   <div style={{ display: "flex", gap: 6 }}>
                     {canManage && <Btn variant="ghost" size="sm" onClick={() => { setF({ name: c.name, clientId: c.clientId, brand: c.brand||"", objective: c.objective||"", startDate: c.startDate||"", endDate: c.endDate||"", budget: c.budget||"", status: c.status||"planning", medium: c.medium||"", notes: c.notes||"", materialList: Array.isArray(c.materialList) ? c.materialList : [] }); setModal(c); }}>✏️</Btn>}
                     {canManage && (isArchived(c) ? <Btn variant="success" size="sm" onClick={() => restore(c.id)}>↩</Btn> : <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive "${c.name}"? Linked MPO history will remain available.`, onYes: () => del(c.id) })}>🗄</Btn>)}
+                    {canDelete && <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Delete "${c.name}" permanently? This cannot be undone.`, onYes: () => hardDelete(c.id) })}>🗑</Btn>}
                   </div>
                 </div>
                 {c.objective && <div style={{ marginTop: 8, fontSize: 12, color: "var(--text2)", borderTop: "1px solid var(--border)", paddingTop: 8 }}>🎯 {c.objective}</div>}

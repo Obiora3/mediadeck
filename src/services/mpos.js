@@ -418,6 +418,23 @@ export const restoreMpoInSupabase = async (mpoId) => {
   return mapMpoFromSupabase(data, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
 
+
+export const deleteMpoInSupabase = async (mpoId) => {
+  const { error: spotsError } = await supabase
+    .from("mpo_spots")
+    .delete()
+    .eq("mpo_id", mpoId);
+  if (spotsError) throw spotsError;
+
+  const { error } = await supabase
+    .from("mpos")
+    .delete()
+    .eq("id", mpoId);
+  if (error) throw error;
+
+  return mpoId;
+};
+
 export const updateMpoStatusInSupabase = async (mpoId, status) => {
   const { data, error } = await supabase.from("mpos").update({ status }).eq("id", mpoId).select(mpoParentSelect).single();
   if (error) throw error;

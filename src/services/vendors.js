@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 
+export const normalizeVendorName = (value) => String(value ?? '')
+  .trim()
+  .replace(/\s+/g, ' ')
+  .toLowerCase();
+
 const vendorListSelect = `
   id,
   agency_id,
@@ -124,4 +129,79 @@ export const restoreVendorInSupabase = async (vendorId) => {
   if (error) throw error;
 
   return mapVendorFromSupabase(data);
+};
+
+
+export const findVendorByNameInSupabase = async (agencyId, vendorName, options = {}) => {
+  const normalizedName = normalizeVendorName(vendorName);
+  if (!agencyId || !normalizedName) return null;
+
+  const includeArchived = options.includeArchived !== false;
+
+  let query = supabase
+    .from('vendors')
+    .select(vendorListSelect)
+    .eq('agency_id', agencyId);
+
+  if (!includeArchived) {
+    query = query.eq('is_archived', false);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const match = (data || []).find((vendor) => normalizeVendorName(vendor.name) === normalizedName);
+  return match ? mapVendorFromSupabase(match) : null;
+};
+
+export const ensureVendorExistsInSupabase = async (agencyId, userId, vendorName, defaults = {}) => {
+  const normalizedName = normalizeVendorName(vendorName);
+  if (!agencyId || !normalizedName) return null;
+
+  const existingAny = await findVendorByNameInSupabase(agencyId, vendorName, { includeArchived: true });
+  if (existingAny) {
+    if (existingAny.archivedAt) {
+      const { data, error } = await supabase
+        .from('vendors')
+        .update({
+          is_archived: false,
+          type: existingAny.type || defaults.type || '',
+          discount: existingAny.discount !== '' && existingAny.discount !== null ? Number(existingAny.discount) : (defaults.discount ? Number(defaults.discount) : 0),
+          commission: existingAny.commission !== '' && existingAny.commission !== null ? Number(existingAny.commission) : (defaults.commission ? Number(defaults.commission) : 0),
+          notes: existingAny.notes || defaults.notes || 'Auto-created from media rates import.',
+        })
+        .eq('id', existingAny.id)
+        .select(vendorListSelect)
+        .single();
+
+      if (error) throw error;
+      return mapVendorFromSupabase(data);
+    }
+
+    return existingAny;
+  }
+
+  return createVendorInSupabase(agencyId, userId, {
+    name: String(vendorName ?? '').trim(),
+    type: defaults.type || '',
+    contact: defaults.contact || '',
+    email: defaults.email || '',
+    phone: defaults.phone || '',
+    location: defaults.location || '',
+    rate: defaults.rate || '',
+    discount: defaults.discount || '',
+    commission: defaults.commission || '',
+    notes: defaults.notes || 'Auto-created from media rates import.',
+  });
+};
+
+
+export const deleteVendorInSupabase = async (vendorId) => {
+  const { error } = await supabase
+    .from('vendors')
+    .delete()
+    .eq('id', vendorId);
+
+  if (error) throw error;
+  return vendorId;
 };

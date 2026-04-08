@@ -114,3 +114,14 @@ export const restoreClientInSupabase = async (clientId) => {
 
   return mapClientFromSupabase(data);
 };
+
+
+export const deleteClientInSupabase = async (clientId) => {
+  const { error } = await supabase
+    .from('clients')
+    .delete()
+    .eq('id', clientId);
+
+  if (error) throw error;
+  return clientId;
+};

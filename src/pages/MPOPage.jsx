@@ -382,8 +382,27 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const blankSpot = { programme: "", wd: "", timeBelt: "", material: "", materialCustom: "", duration: "30", rateId: "", customRate: "", spots: "", calendarDays: [], calendarDayCounts: {} };
   const [spotForm, setSpotForm] = useState(blankSpot);
   const [editSpotId, setEditSpotId] = useState(null);
-  const draftKey = "msp_mpo_draft";
-  const [hasSavedDraft, setHasSavedDraft] = useState(() => Boolean(store.get(draftKey)));
+  const legacyDraftKey = "msp_mpo_draft";
+  const draftCollectionKey = `msp_mpo_drafts_${user?.id || "guest"}`;
+  const sortDraftsByRecent = (drafts = []) => [...drafts].sort((a, b) => (b?.savedAt || 0) - (a?.savedAt || 0));
+  const migrateLegacyDraftIfNeeded = () => {
+    const existingDrafts = store.get(draftCollectionKey, []);
+    if (Array.isArray(existingDrafts) && existingDrafts.length) return sortDraftsByRecent(existingDrafts);
+    const legacyDraft = store.get(legacyDraftKey);
+    if (!legacyDraft) return [];
+    const migratedDraft = {
+      id: legacyDraft.id || uid(),
+      ...legacyDraft,
+      createdAt: legacyDraft.createdAt || legacyDraft.savedAt || Date.now(),
+      savedAt: legacyDraft.savedAt || Date.now(),
+    };
+    const migrated = [migratedDraft];
+    store.set(draftCollectionKey, migrated);
+    store.del(legacyDraftKey);
+    return migrated;
+  };
+  const [savedDrafts, setSavedDrafts] = useState(() => migrateLegacyDraftIfNeeded());
+  const [activeDraftId, setActiveDraftId] = useState(null);
   const upd = k => v => setMpoData(m => ({ ...m, [k]: v }));
   const updS = k => v => setSpotForm(f => ({ ...f, [k]: v }));
   const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -427,12 +446,90 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     }
   }, [mpoData.campaignId]);
 
+  const syncSavedDrafts = (updater) => {
+    setSavedDrafts(prev => {
+      const nextDrafts = typeof updater === "function" ? updater(prev || []) : updater;
+      const normalized = sortDraftsByRecent(Array.isArray(nextDrafts) ? nextDrafts : []);
+      store.set(draftCollectionKey, normalized);
+      return normalized;
+    });
+  };
+
+  const buildDraftTitle = (draft) => {
+    const draftCampaign = campaigns.find(c => c.id === draft?.mpoData?.campaignId);
+    const draftVendor = vendors.find(v => v.id === draft?.mpoData?.vendorId);
+    const draftBrand = draftCampaign?.brand || draft?.mpoData?.brand || "";
+    if (draft?.mpoData?.mpoNo && draft?.editId) return draft.mpoData.mpoNo;
+    if (draftCampaign?.name) return draftCampaign.name;
+    if (draftVendor?.name && draftBrand) return `${draftBrand} · ${draftVendor.name}`;
+    if (draftVendor?.name) return draftVendor.name;
+    if (draftBrand) return draftBrand;
+    return "Untitled MPO Draft";
+  };
+
+  const buildDraftSubtitle = (draft) => {
+    const draftCampaign = campaigns.find(c => c.id === draft?.mpoData?.campaignId);
+    const draftClient = clients.find(c => c.id === draftCampaign?.clientId);
+    const draftVendor = vendors.find(v => v.id === draft?.mpoData?.vendorId);
+    const bits = [
+      draftClient?.name || draft?.mpoData?.clientName || "",
+      draftVendor?.name || draft?.mpoData?.vendorName || "",
+      draft?.spots?.length ? `${draft.spots.length} row${draft.spots.length !== 1 ? "s" : ""}` : "",
+      draft?.step ? `Step ${draft.step}` : "",
+    ].filter(Boolean);
+    return bits.join(" · ");
+  };
+
+  const hasMeaningfulDraftContent = (nextMpoData, nextSpots, nextSurcharge) => {
+    return Boolean(
+      nextMpoData?.campaignId ||
+      nextMpoData?.vendorId ||
+      nextMpoData?.signedBy ||
+      nextMpoData?.signedTitle ||
+      nextMpoData?.transmitMsg ||
+      nextMpoData?.month ||
+      (nextMpoData?.months || []).length ||
+      nextMpoData?.medium ||
+      (nextSpots || []).length ||
+      nextSurcharge?.pct ||
+      nextSurcharge?.label
+    );
+  };
+
+  const removeSavedDraft = (draftId, options = {}) => {
+    if (!draftId) return;
+    syncSavedDrafts(prev => prev.filter(draft => draft.id !== draftId));
+    if (activeDraftId === draftId) setActiveDraftId(null);
+    if (!options.quiet) setToast({ msg: "Draft removed.", type: "success" });
+  };
+
+  useEffect(() => {
+    setSavedDrafts(migrateLegacyDraftIfNeeded());
+    setActiveDraftId(null);
+  }, [draftCollectionKey]);
+
   useEffect(() => {
     if (view !== "form") return;
-    const payload = { editId, step, mpoData, spots, surcharge, savedAt: Date.now() };
-    store.set(draftKey, payload);
-    setHasSavedDraft(true);
-  }, [view, editId, step, mpoData, spots, surcharge]);
+    if (!hasMeaningfulDraftContent(mpoData, spots, surcharge)) return;
+
+    const nextDraftId = activeDraftId || uid();
+    if (!activeDraftId) setActiveDraftId(nextDraftId);
+
+    syncSavedDrafts(prev => {
+      const existingDraft = prev.find(draft => draft.id === nextDraftId);
+      const payload = {
+        id: nextDraftId,
+        editId,
+        step,
+        mpoData,
+        spots,
+        surcharge,
+        createdAt: existingDraft?.createdAt || Date.now(),
+        savedAt: Date.now(),
+      };
+      return [payload, ...prev.filter(draft => draft.id !== nextDraftId)];
+    });
+  }, [view, activeDraftId, editId, step, mpoData, spots, surcharge]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -445,21 +542,27 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     return () => window.removeEventListener("beforeunload", handler);
   }, [view]);
 
-  const resumeSavedDraft = () => {
-    const draft = store.get(draftKey);
-    if (!draft) return setToast({ msg: "No saved draft found.", type: "error" });
+  const resumeSavedDraft = (draftId) => {
+    const draft = savedDrafts.find(item => item.id === draftId);
+    if (!draft) return setToast({ msg: "Draft not found.", type: "error" });
+    setActiveDraftId(draft.id);
     setEditId(draft.editId || null);
     setStep(draft.step || 1);
     setMpoData({ ...blankMPO("", mpos), ...(draft.mpoData || {}), preparedSignature: draft?.mpoData?.preparedSignature || user?.signatureDataUrl || "", signedSignature: draft?.mpoData?.signedSignature || "" });
     setSpots(draft.spots || []);
     setSurcharge(draft.surcharge || { pct: "", label: "" });
     setView("form");
-    setToast({ msg: "Saved MPO draft restored.", type: "success" });
+    setToast({ msg: "MPO draft restored.", type: "success" });
   };
 
-  const clearSavedDraft = () => {
-    store.del(draftKey);
-    setHasSavedDraft(false);
+  const clearSavedDraft = (draftId = activeDraftId) => {
+    if (!draftId) {
+      syncSavedDrafts([]);
+      setActiveDraftId(null);
+      setToast({ msg: "All saved MPO drafts cleared.", type: "success" });
+      return;
+    }
+    removeSavedDraft(draftId);
   };
 
   const refreshHistoryModal = async (mpoId, title) => {
@@ -667,22 +770,26 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
 
   const openNew = () => {
     const blank = blankMPO("", mpos);
+    setActiveDraftId(uid());
     setMpoData(blank); setSpots([]); setStep(1); setEditId(null); setView("form");
     calMonthFallbackRowsRef.current = {};
     setDailyMode(false); setCalRows([blankCalRow()]); setCalData({}); setActiveCalMonth("");
-    clearSavedDraft();
   };
   const openEdit = (mpo) => {
     if (!canEditMpoContent(user, mpo)) {
       setToast({ msg: `You can only edit MPOs in Draft or Rejected status. Current status: ${MPO_STATUS_LABELS[mpo?.status || "draft"] || (mpo?.status || "draft")}.`, type: "error" });
       return;
     }
+    const existingDraft = savedDrafts.find(draft => draft.editId === mpo.id);
+    if (existingDraft) {
+      return resumeSavedDraft(existingDraft.id);
+    }
+    setActiveDraftId(`edit_${mpo.id}`);
     setMpoData({ campaignId: mpo.campaignId||"", vendorId: mpo.vendorId||"", mpoNo: mpo.mpoNo||"", date: mpo.date||"", month: mpo.month||"", months: mpo.months||[], year: mpo.year||"", medium: mpo.medium||"", signedBy: mpo.signedBy||"", signedTitle: mpo.signedTitle||"", preparedBy: mpo.preparedBy||user?.name||"", preparedContact: mpo.preparedContact||user?.phone||user?.email||"", preparedTitle: mpo.preparedTitle||user?.title||"", preparedSignature: mpo.preparedSignature||user?.signatureDataUrl||"", signedSignature: mpo.signedSignature||"", agencyAddress: mpo.agencyAddress||user?.agencyAddress||"", transmitMsg: mpo.transmitMsg||"", status: mpo.status||"draft" });
     setSurcharge({ pct: mpo.surchPct ? String((mpo.surchPct||0)*100) : "", label: mpo.surchLabel||"" });
     setSpots(mpo.spots || []); setEditId(mpo.id); setStep(1); setView("form");
     calMonthFallbackRowsRef.current = {};
     setDailyMode(false); setCalRows([blankCalRow()]); setCalData({}); setActiveCalMonth("");
-    clearSavedDraft();
   };
 
   // Add spot rows from calendar schedule — supports single or multi-month
@@ -799,7 +906,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
         }).catch(error => console.error("Failed to write MPO audit event:", error));
       }
-      clearSavedDraft();
+      removeSavedDraft(activeDraftId, { quiet: true });
       setToast({ msg: editId ? "MPO updated!" : `MPO ${generatedMpoNo} saved!`, type: "success" });
       setView("list");
     } catch (e) {
@@ -989,53 +1096,42 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           </div>
         </Modal>
       )}
-      <style>{`
-        @media (max-width: 1520px) {
-          .mpo-list-card-grid {
-            grid-template-columns: 72px minmax(320px,1fr) !important;
-          }
-          .mpo-list-card-main,
-          .mpo-list-card-side,
-          .mpo-list-card-actions {
-            grid-column: 2 / -1 !important;
-          }
-          .mpo-list-card-side {
-            justify-self: stretch !important;
-          }
-          .mpo-list-card-summary {
-            justify-content: space-between !important;
-          }
-        }
-        @media (max-width: 980px) {
-          .mpo-list-card-grid {
-            grid-template-columns: 1fr !important;
-          }
-          .mpo-list-card-icon,
-          .mpo-list-card-main,
-          .mpo-list-card-side,
-          .mpo-list-card-actions {
-            grid-column: auto !important;
-          }
-          .mpo-list-card-main {
-            text-align: left !important;
-          }
-          .mpo-list-card-main-badges {
-            justify-content: flex-start !important;
-          }
-          .mpo-list-card-summary {
-            grid-template-columns: 1fr !important;
-            justify-content: stretch !important;
-          }
-          .mpo-list-card-actions {
-            justify-content: flex-start !important;
-          }
-        }
-      `}</style>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 10 }}>
         <div><h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>MPO Generator</h1><p style={{ color: "var(--text2)", marginTop: 3, fontSize: 13 }}>Create, manage & export Media Purchase Orders</p></div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}><Field value={searchTerm} onChange={setSearchTerm} placeholder="Search MPO, vendor, client..." /><Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} /><Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />{canManage && <Btn icon="+" onClick={openNew}>New MPO</Btn>}</div>
       </div>
-      {hasSavedDraft && <Card style={{ marginBottom: 14, padding: "14px 18px", background: "rgba(59,126,245,.08)", border: "1px solid rgba(59,126,245,.22)" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}><div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>Saved MPO draft found</div><div style={{ fontSize: 12, color: "var(--text2)", marginTop: 3 }}>Your last in-progress MPO was autosaved locally. You can resume it or clear it.</div></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Btn variant="blue" size="sm" onClick={resumeSavedDraft}>Resume Draft</Btn><Btn variant="ghost" size="sm" onClick={clearSavedDraft}>Clear Draft</Btn></div></div></Card>}
+      {savedDrafts.length > 0 && (
+        <Card style={{ marginBottom: 14, padding: "14px 18px", background: "rgba(59,126,245,.08)", border: "1px solid rgba(59,126,245,.22)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14 }}>Saved MPO drafts</div>
+              <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 3 }}>
+                Any in-progress MPO you started and left unfinished is saved here so you can continue later.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <Badge color="blue">{savedDrafts.length} draft{savedDrafts.length !== 1 ? "s" : ""}</Badge>
+              <Btn variant="ghost" size="sm" onClick={() => clearSavedDraft(null)}>Clear All</Btn>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {savedDrafts.map(draft => (
+              <div key={draft.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "10px 12px", borderRadius: 10, background: "var(--bg2)", border: "1px solid var(--border)" }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{buildDraftTitle(draft)}</div>
+                  <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 3 }}>
+                    {buildDraftSubtitle(draft) || "Draft MPO"}{draft.savedAt ? ` · Saved ${new Date(draft.savedAt).toLocaleString()}` : ""}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Btn variant="blue" size="sm" onClick={() => resumeSavedDraft(draft.id)}>Continue</Btn>
+                  <Btn variant="ghost" size="sm" onClick={() => clearSavedDraft(draft.id)}>Delete Draft</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 14 }}>
         <Stat icon="⏳" label="My Queue" value={workflowStats.myQueue} sub="MPOs currently waiting on your role" color="var(--blue)" />
         <Stat icon="🧾" label="Pending Review" value={workflowStats.pendingReview} sub="Submitted and reviewed MPOs in the approval lane" color="var(--purple)" />
@@ -1103,56 +1199,13 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       {visibleMpos.length === 0 ? <Card><Empty icon="📄" title="No MPOs yet" sub="Create your first Media Purchase Order" /></Card> :
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {visibleMpoCards.map(m => (
-            <Card key={m.id} style={{ padding: "18px 26px" }}>
-              <div
-                className="mpo-list-card-grid"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "72px minmax(460px,1fr) minmax(320px,430px)",
-                  columnGap: 18,
-                  rowGap: 18,
-                  alignItems: "start",
-                }}
-              >
-                <div
-                  className="mpo-list-card-icon"
-                  style={{
-                    width: 64,
-                    height: 64,
-                    background: "rgba(240,165,0,.08)",
-                    border: "1px solid rgba(240,165,0,.22)",
-                    borderRadius: 16,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 28,
-                    color: "var(--accent)",
-                    gridRow: "1 / span 2",
-                    alignSelf: "start",
-                    justifySelf: "center",
-                  }}
-                >
-                  📄
-                </div>
-
-                <div
-                  className="mpo-list-card-main"
-                  style={{
-                    minWidth: 0,
-                    textAlign: "center",
-                    paddingTop: 2,
-                  }}
-                >
-                  <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 16, lineHeight: 1.2 }}>
-                    {m.mpoNo || "MPO"} <span style={{ color: "var(--text3)", fontSize: 14 }}>— {m.vendorName}</span>
-                  </div>
-                  <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 8, lineHeight: 1.45 }}>
-                    {m.clientName} {m.brand && `· ${m.brand}`} · {(m.months || []).length > 1 ? (m.months || []).join("-") : m.month} {m.year} · {m.totalSpots} spots
-                  </div>
-                  <div
-                    className="mpo-list-card-main-badges"
-                    style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14, justifyContent: "center" }}
-                  >
+            <Card key={m.id} style={{ padding: "14px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                <div style={{ width: 44, height: 44, background: "rgba(240,165,0,.1)", border: "1px solid rgba(240,165,0,.2)", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>📄</div>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>{m.mpoNo || "MPO"} <span style={{ color: "var(--text3)", fontSize: 13 }}>— {m.vendorName}</span></div>
+                  <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>{m.clientName} {m.brand && `· ${m.brand}`} · {(m.months||[]).length > 1 ? (m.months||[]).join("-") : m.month} {m.year} · {m.totalSpots} spots</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
                     <Badge color={statusColors[m.status || "draft"] || "accent"}>{MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft")}</Badge>
                     <Badge color={getMpoWorkflowMeta(m).color}>Waiting on: {getMpoWorkflowMeta(m).label}</Badge>
                     {isMpoAwaitingUser(user, m) ? <Badge color="blue">My Queue</Badge> : null}
@@ -1160,70 +1213,15 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                     <Badge color="blue">Invoice: {(MPO_INVOICE_STATUS_OPTIONS.find(o => o.value === (m.invoiceStatus || "pending"))?.label || m.invoiceStatus || "pending")}</Badge>
                     <Badge color="purple">Proof: {(MPO_PROOF_STATUS_OPTIONS.find(o => o.value === (m.proofStatus || "pending"))?.label || m.proofStatus || "pending")}</Badge>
                     <Badge color="green">Payment: {(MPO_PAYMENT_STATUS_OPTIONS.find(o => o.value === (m.paymentStatus || "unpaid"))?.label || m.paymentStatus || "unpaid")}</Badge>
-                    {isArchived(m) ? <Badge color="red">Archived</Badge> : null}
                   </div>
-                  <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 14, lineHeight: 1.5 }}>
-                    {getMpoWorkflowMeta(m).hint}
-                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 7 }}>{getMpoWorkflowMeta(m).hint}</div>{isArchived(m) && <div style={{ marginTop: 4 }}><Badge color="red">Archived</Badge></div>}
                 </div>
-
-                <div
-                  className="mpo-list-card-side"
-                  style={{
-                    minWidth: 0,
-                    justifySelf: "end",
-                    width: "100%",
-                    maxWidth: 420,
-                  }}
-                >
-                  <div
-                    className="mpo-list-card-summary"
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "minmax(90px,1fr) minmax(120px,1fr) minmax(150px,170px)",
-                      gap: 18,
-                      alignItems: "center",
-                      justifyContent: "end",
-                    }}
-                  >
-                    <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Gross</div>
-                      <div style={{ fontSize: 14, fontWeight: 700, marginTop: 8, color: "var(--text2)" }}>{fmtN(m.totalGross)}</div>
-                    </div>
-                    <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Net Payable</div>
-                      <div style={{ fontSize: 14, fontWeight: 800, marginTop: 8, color: "var(--accent)" }}>{fmtN(m.grandTotal || m.netVal)}</div>
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      {canManageStatus ? (
-                        <Field
-                          value={m.status || "draft"}
-                          onChange={v => requestMpoStatusChange(m, v)}
-                          options={[
-                            { value: m.status || "draft", label: MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft") },
-                            ...getAllowedMpoStatusTargets(user, m).map(value => ({ value, label: MPO_STATUS_LABELS[value] || value })),
-                          ].filter((option, index, arr) => arr.findIndex(item => item.value === option.value) === index)}
-                        />
-                      ) : (
-                        <div style={{ paddingTop: 8, textAlign: "center" }}>
-                          <Badge color={statusColors[m.status || "draft"] || "accent"}>{(m.status || "draft").toUpperCase()}</Badge>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase" }}>Gross</div><div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, color: "var(--text2)" }}>{fmtN(m.totalGross)}</div></div>
+                  <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase" }}>Net Payable</div><div style={{ fontSize: 14, fontWeight: 700, marginTop: 2, color: "var(--accent)" }}>{fmtN(m.grandTotal || m.netVal)}</div></div>
+                  {canManageStatus ? <Field value={m.status || "draft"} onChange={v => requestMpoStatusChange(m, v)} options={[{ value: m.status || "draft", label: MPO_STATUS_LABELS[m.status || "draft"] || (m.status || "draft") }, ...getAllowedMpoStatusTargets(user, m).map(value => ({ value, label: MPO_STATUS_LABELS[value] || value }))].filter((option, index, arr) => arr.findIndex(item => item.value === option.value) === index)} /> : <div style={{ minWidth: 110 }}><Badge color={statusColors[m.status || "draft"] || "accent"}>{(m.status || "draft").toUpperCase()}</Badge></div>}
                 </div>
-
-                <div
-                  className="mpo-list-card-actions"
-                  style={{
-                    gridColumn: "2 / -1",
-                    display: "flex",
-                    gap: 10,
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    justifyContent: "flex-start",
-                  }}
-                >
+                <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
                   {getQuickWorkflowActions(user, m).slice(0, 2).map(action => (
                     <Btn key={action.value} variant={action.variant} size="sm" onClick={() => requestMpoStatusChange(m, action.value)}>{action.label}</Btn>
                   ))}

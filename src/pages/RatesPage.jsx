@@ -6,8 +6,8 @@ import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
 import { activeOnly, archivedOnly, isArchived, pctWithin } from "../utils/records";
 import { fmtN } from "../utils/formatters";
-import { hasPermission, readOnlyMessage } from "../constants/roles";
-import { createRatesInSupabase, updateRateInSupabase, archiveRateInSupabase, restoreRateInSupabase, importRatesInSupabase } from "../services/rates";
+import { hasPermission, readOnlyMessage, isAdmin, adminOnlyMessage } from "../constants/roles";
+import { createRatesInSupabase, updateRateInSupabase, archiveRateInSupabase, restoreRateInSupabase, importRatesInSupabase, deleteRateInSupabase } from "../services/rates";
 import { createAuditEventInSupabase } from "../services/notifications";
 import { Field, Btn, Card } from "../components/ui/primitives";
 
@@ -55,7 +55,8 @@ const normaliseExcelRow = (row, vendors) => {
     return "";
   };
   const vendorName = get("vendor", "vendor name", "station", "media owner");
-  const matchedVendor = vendors.find(v => v.name.toLowerCase() === vendorName.toLowerCase());
+  const normalizeVendorName = (value) => String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  const matchedVendor = vendors.find(v => normalizeVendorName(v.name) === normalizeVendorName(vendorName));
   return {
     _vendorName: vendorName,
     vendorId:    matchedVendor?.id || "",
@@ -134,7 +135,7 @@ const ExcelImportModal = ({ vendors, existingRates, onImport, onClose }) => {
 
         if (!r._vendorName) errs.push("Row " + (i + 2) + ": Missing Vendor name.");
         if (!r.ratePerSpot || isNaN(parseFloat(r.ratePerSpot))) errs.push("Row " + (i + 2) + ": Invalid or missing Rate.");
-        if (!r.vendorId) errs.push("Row " + (i + 2) + ": Vendor \"" + r._vendorName + "\" not found — will import without vendor link.");
+        if (!r.vendorId && r._vendorName) errs.push("Row " + (i + 2) + ": Vendor \"" + r._vendorName + "\" not found — vendor will be created automatically during import.");
 
         if (r.vendorId && r.programme && existingRateKeys.has(duplicateKey)) {
           errs.push("Row " + (i + 2) + ": Duplicate of an existing active rate card.");
@@ -173,7 +174,7 @@ const ExcelImportModal = ({ vendors, existingRates, onImport, onClose }) => {
   const confirmImport = () => {
     const toImport = rows.filter((_, i) => selected.includes(i)).map(r => ({
       id: uid(), createdAt: Date.now(),
-      vendorId: r.vendorId, mediaType: r.mediaType, programme: r.programme,
+      _vendorName: r._vendorName, vendorId: r.vendorId, mediaType: r.mediaType, programme: r.programme,
       timeBelt: r.timeBelt, duration: r.duration || "30",
       ratePerSpot: r.ratePerSpot, discount: r.discount || "0",
       commission: r.commission || "0", vat: "0",
@@ -192,7 +193,7 @@ const ExcelImportModal = ({ vendors, existingRates, onImport, onClose }) => {
           <div style={{ background: "var(--bg3)", borderRadius: 12, padding: 16, marginBottom: 20, border: "1px solid var(--border2)" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", fontFamily: "\'Syne\',sans-serif", marginBottom: 10 }}>Required Excel Columns</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(175px,1fr))", gap: 8 }}>
-              {[{col:"Vendor",req:true,note:"Must match vendor in system"},{col:"Media",req:false,note:"e.g. Television, Radio"},{col:"Type",req:false,note:"Media type / category"},{col:"Programme",req:false,note:"Show or slot name"},{col:"Timebelt",req:false,note:"e.g. 21:00-21:30"},{col:"Duration",req:false,note:"In seconds, e.g. 30"},{col:"Rate",req:true,note:"Rate per spot in N"},{col:"Discounts",req:false,note:"Volume discount %"}].map(({ col, req, note }) => (
+              {[{col:"Vendor",req:true,note:"Existing vendor will link, new vendor will auto-create"},{col:"Media",req:false,note:"e.g. Television, Radio"},{col:"Type",req:false,note:"Media type / category"},{col:"Programme",req:false,note:"Show or slot name"},{col:"Timebelt",req:false,note:"e.g. 21:00-21:30"},{col:"Duration",req:false,note:"In seconds, e.g. 30"},{col:"Rate",req:true,note:"Rate per spot in N"},{col:"Discounts",req:false,note:"Volume discount %"}].map(({ col, req, note }) => (
                 <div key={col} style={{ background: "var(--bg4)", borderRadius: 8, padding: "8px 11px", border: req ? "1px solid rgba(240,165,0,.3)" : "1px solid var(--border)" }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: req ? "var(--accent)" : "var(--text)", marginBottom: 2 }}>{col}{req && <span style={{ color: "var(--red)", marginLeft: 3 }}>*</span>}</div>
                   <div style={{ fontSize: 10, color: "var(--text3)" }}>{note}</div>
@@ -251,7 +252,7 @@ const ExcelImportModal = ({ vendors, existingRates, onImport, onClose }) => {
                       <td style={{ padding: "9px 12px", fontWeight: 600 }}>
                         {r._vendorName || "—"}
                         {r.vendorId && <div style={{ fontSize: 10, color: "var(--green)" }}>Linked</div>}
-                        {!r.vendorId && r._vendorName && <div style={{ fontSize: 10, color: "var(--orange)" }}>Not matched</div>}
+                        {!r.vendorId && r._vendorName && <div style={{ fontSize: 10, color: "var(--orange)" }}>Will auto-create</div>}
                       </td>
                       <td style={{ padding: "9px 12px", color: "var(--text2)" }}>{r.mediaType || "—"}</td>
                       <td style={{ padding: "9px 12px", color: "var(--text2)" }}>{r.programme || "—"}</td>
@@ -289,8 +290,9 @@ const ExcelImportModal = ({ vendors, existingRates, onImport, onClose }) => {
 };
 
 
-const RatesPage = ({ rates, setRates, vendors, clients, campaigns, user }) => {
+const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, user }) => {
   const canManage = hasPermission(user, "manageRates");
+  const canDelete = isAdmin(user);
   const [modal, setModal]         = useState(null);
   const [importModal, setImportModal] = useState(false);
   const [search, setSearch]       = useState("");
@@ -426,19 +428,47 @@ const RatesPage = ({ rates, setRates, vendors, clients, campaigns, user }) => {
       setToast({ msg: e.message || "Failed to restore rate.", type: "error" });
     }
   };
+  const hardDelete = async id => {
+    if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
+    try {
+      const target = rates.find(x => x.id === id);
+      await deleteRateInSupabase(id);
+      setRates(v => v.filter(x => x.id !== id));
+      createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: id, action: "deleted", actor: user, metadata: { programme: target?.programme || "", vendorId: target?.vendorId || "" } }).catch(error => console.error("Failed to write audit event:", error));
+      setToast({ msg: "Rate card deleted permanently.", type: "success" });
+      setConfirm(null);
+    } catch (e) {
+      setToast({ msg: e.message || "Failed to delete rate.", type: "error" });
+    }
+  };
 
   const handleExcelImport = async (newRates) => {
     try {
-      const { insertedRates, duplicateRows } = await importRatesInSupabase(user.agencyId, user.id, newRates);
+      const { insertedRates, duplicateRows, createdVendors = [] } = await importRatesInSupabase(user.agencyId, user.id, newRates);
       setRates(v => [...insertedRates, ...v]);
+
+      if (typeof setVendors === "function" && createdVendors.length) {
+        setVendors(prev => {
+          const merged = [...createdVendors, ...(prev || [])];
+          const seen = new Set();
+          return merged.filter(vendor => {
+            if (!vendor?.id || seen.has(vendor.id)) return false;
+            seen.add(vendor.id);
+            return true;
+          });
+        });
+      }
 
       if (insertedRates.length && duplicateRows.length) {
         setToast({
-          msg: `${insertedRates.length} rate card${insertedRates.length !== 1 ? "s" : ""} imported. ${duplicateRows.length} duplicate row${duplicateRows.length !== 1 ? "s were" : " was"} skipped.`,
+          msg: `${insertedRates.length} rate card${insertedRates.length !== 1 ? "s" : ""} imported. ${createdVendors.length ? `${createdVendors.length} vendor${createdVendors.length !== 1 ? "s" : ""} auto-created. ` : ""}${duplicateRows.length} duplicate row${duplicateRows.length !== 1 ? "s were" : " was"} skipped.`,
           type: "success"
         });
       } else if (insertedRates.length) {
-        setToast({ msg: `${insertedRates.length} rate card${insertedRates.length !== 1 ? "s" : ""} imported successfully!`, type: "success" });
+        setToast({
+          msg: `${insertedRates.length} rate card${insertedRates.length !== 1 ? "s" : ""} imported successfully!${createdVendors.length ? ` ${createdVendors.length} vendor${createdVendors.length !== 1 ? "s were" : " was"} auto-created.` : ""}`,
+          type: "success"
+        });
       } else {
         setToast({ msg: "No new rate cards were imported.", type: "error" });
       }
@@ -501,6 +531,7 @@ const RatesPage = ({ rates, setRates, vendors, clients, campaigns, user }) => {
                       <div style={{ display: "flex", gap: 5 }}>
                         {canManage && <Btn variant="ghost" size="sm" onClick={() => openEdit(r)}>✏️</Btn>}
                         {canManage && (isArchived(r) ? <Btn variant="success" size="sm" onClick={() => restore(r.id)}>↩</Btn> : <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive this rate card? Existing MPOs will still retain their saved values.`, onYes: () => del(r.id) })}>🗄</Btn>)}
+                        {canDelete && <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Delete this rate card permanently? This cannot be undone.`, onYes: () => hardDelete(r.id) })}>🗑</Btn>}
                       </div>
                     </td>
                   </tr>

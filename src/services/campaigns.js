@@ -130,3 +130,14 @@ export const restoreCampaignInSupabase = async (campaignId) => {
 
   return mapCampaignFromSupabase(data);
 };
+
+
+export const deleteCampaignInSupabase = async (campaignId) => {
+  const { error } = await supabase
+    .from('campaigns')
+    .delete()
+    .eq('id', campaignId);
+
+  if (error) throw error;
+  return campaignId;
+};

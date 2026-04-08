@@ -12,6 +12,19 @@ import { MPO_PAYMENT_STATUS_OPTIONS, MPO_RECON_STATUS_OPTIONS, MPO_PROOF_STATUS_
 import { getDaysPastDue, normalizeReceivableRecord, buildReceivableFromMpo } from "../services/receivables";
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const isoToday = () => new Date().toISOString().slice(0, 10);
+const addDaysToIso = (isoDate, days = 0) => {
+  const base = isoDate ? new Date(`${isoDate}T00:00:00`) : new Date();
+  if (Number.isNaN(base.getTime())) return isoToday();
+  base.setDate(base.getDate() + (Number(days) || 0));
+  return base.toISOString().slice(0, 10);
+};
+const formatIsoDate = (value) => {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" });
+};
 const buildCSV = (rows, headers) => {
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   return [headers.map(esc).join(","), ...rows.map((r) => r.map(esc).join(","))] .join("\n");

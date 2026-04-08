@@ -57,7 +57,7 @@ const downloadJSON = (filename, payload) => {
   URL.revokeObjectURL(url);
 };
 
-const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSettings, vendors, clients, campaigns, rates, mpos, receivables = [], members, setMembers, notifications, unreadNotifications, onMarkNotificationRead, onMarkAllNotificationsRead }) => {
+const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSettings, vendors, clients, campaigns, rates, mpos, receivables = [], members, setMembers, notifications, unreadNotifications, onMarkNotificationRead, onMarkAllNotificationsRead, initialSectionRequest = null }) => {
   const [toast, setToast] = useState(null);
   const backupInputRef = useRef(null);
   const [confirm, setConfirm] = useState(null);
@@ -284,6 +284,13 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
     ...(canManageMembers ? [{ id: "team", icon: "🛡️", label: "Team & Roles" }] : []),
     ...(canDanger ? [{ id: "data", icon: "🗄️", label: "Data Management" }] : []),
   ];
+
+  useEffect(() => {
+    const requestedSection = initialSectionRequest?.section;
+    if (requestedSection && tabs.find(tab => tab.id === requestedSection)) {
+      setSection(requestedSection);
+    }
+  }, [initialSectionRequest?.key]);
 
   useEffect(() => {
     if (!tabs.find(tab => tab.id === section)) setSection("profile");
