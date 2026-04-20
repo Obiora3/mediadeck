@@ -322,8 +322,9 @@ export const fetchMappedMpoById = async (mpoId) => {
     .from("mpos")
     .select(mpoParentSelect)
     .eq("id", mpoId)
-    .single();
+    .maybeSingle();
   if (parentError) throw parentError;
+  if (!parent) return null;
 
   const { data: spotRows, error: spotError } = await supabase
     .from("mpo_spots")
@@ -627,6 +628,7 @@ export const deleteMpoInSupabase = async (mpoId) => {
   if (!mpoId) throw new Error("No MPO selected for deletion.");
 
   const existing = await fetchMappedMpoById(mpoId);
+  if (!existing) return null;
 
   const { error: spotDeleteError } = await supabase
     .from("mpo_spots")

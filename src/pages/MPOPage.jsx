@@ -2782,6 +2782,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const [statusFilter, setStatusFilter] = useState("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
   const [selectedMpoIds, setSelectedMpoIds] = useState([]);
+  const [deleteProgress, setDeleteProgress] = useState(null);
   const workflowPanelStorageKey = `msp_mpo_workflow_panel_${user?.id || "guest"}`;
   const [workflowPanelOpen, setWorkflowPanelOpen] = useState(() => store.get(workflowPanelStorageKey, true));
   const [mediaPlanImportOpen, setMediaPlanImportOpen] = useState(false);
@@ -3162,14 +3163,14 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     setToast({ msg: "MPO draft restored.", type: "success" });
   };
 
-  const clearSavedDraft = (draftId = activeDraftId) => {
+  const clearSavedDraft = (draftId = activeDraftId, options = {}) => {
     if (!draftId) {
       syncSavedDrafts([]);
       setActiveDraftId(null);
-      setToast({ msg: "All saved MPO drafts cleared.", type: "success" });
+      if (!options.quiet) setToast({ msg: "All saved MPO drafts cleared.", type: "success" });
       return;
     }
-    removeSavedDraft(draftId);
+    removeSavedDraft(draftId, options);
   };
 
   const refreshHistoryModal = async (mpoId, title) => {
@@ -3554,9 +3555,8 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
         }).catch(error => console.error("Failed to write MPO audit event:", error));
       }
-      clearSavedDraft();
       setToast({ msg: editId ? "MPO updated!" : `MPO ${generatedMpoNo} saved!`, type: "success" });
-      clearSavedDraft();
+      clearSavedDraft(activeDraftId, { quiet: true });
       setActiveDraftId(null);
       setView("list");
     } catch (e) {
@@ -3642,8 +3642,30 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
         throw new Error("deleteMpoInSupabase is not available in ../services/mpos yet.");
       }
       const selectedItems = mpos.filter(item => selectedVisibleMpoIds.includes(item.id));
+      const shouldShowProgress = selectedItems.length > 2;
+      if (shouldShowProgress) {
+        setDeleteProgress({ current: 0, total: selectedItems.length, label: "Preparing bulk delete..." });
+      }
+      let completed = 0;
       for (const mpo of selectedItems) {
+        if (shouldShowProgress) {
+          setDeleteProgress({
+            current: completed,
+            total: selectedItems.length,
+            label: `Deleting ${completed + 1} of ${selectedItems.length}: ${mpo.mpoNo || mpo.id}`,
+          });
+        }
         await mod.deleteMpoInSupabase(mpo.id);
+        completed += 1;
+        if (shouldShowProgress) {
+          setDeleteProgress({
+            current: completed,
+            total: selectedItems.length,
+            label: completed >= selectedItems.length
+              ? `Deleted ${completed} of ${selectedItems.length}`
+              : `Deleted ${completed} of ${selectedItems.length}`,
+          });
+        }
         createAuditEventInSupabase({
           agencyId: user.agencyId,
           recordType: "mpo",
@@ -3659,6 +3681,8 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       setToast({ msg: `${selectedVisibleMpoIds.length} MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""} deleted.`, type: "success" });
     } catch (e) {
       setToast({ msg: e.message || "Failed to delete selected MPOs.", type: "error" });
+    } finally {
+      setDeleteProgress(null);
     }
   };
 
@@ -3723,6 +3747,44 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   if (view === "list") return (
     <div className="fade mpo-page-scroll" style={{ width: "100%" }}>
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+      {deleteProgress && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: toast ? 86 : 22,
+            right: 22,
+            zIndex: 9998,
+            minWidth: 280,
+            maxWidth: 360,
+            background: "var(--bg4)",
+            color: "var(--text)",
+            padding: "12px 16px",
+            borderRadius: 12,
+            border: "1px solid var(--border2)",
+            boxShadow: "0 8px 28px rgba(0,0,0,.35)",
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>
+            Bulk Delete
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 9 }}>
+            {deleteProgress.label}
+          </div>
+          <div style={{ height: 8, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,.08)" }}>
+            <div
+              style={{
+                width: `${deleteProgress.total ? Math.round((deleteProgress.current / deleteProgress.total) * 100) : 0}%`,
+                height: "100%",
+                background: "linear-gradient(90deg,var(--accent),#f7c66a)",
+                transition: "width .18s ease",
+              }}
+            />
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text3)" }}>
+            {deleteProgress.current} of {deleteProgress.total} completed
+          </div>
+        </div>
+      )}
       {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={() => setConfirm(null)} />}
       {preview && <PrintPreview html={preview.html} csv={preview.csv} title={preview.title} onClose={() => setPreview(null)} />}
       {mediaPlanImportOpen && (
@@ -3947,8 +4009,16 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                   <Badge color={selectedVisibleMpoIds.length ? "accent" : "blue"}>{selectedVisibleMpoIds.length} selected</Badge>
                   <Btn variant="ghost" size="sm" onClick={() => setSelectedMpoIds([])}>Clear Selection</Btn>
-                  <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive ${selectedVisibleMpoIds.length} selected MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""}?`, onYes: archiveSelectedMpos })}>Archive Selected</Btn>
-                  <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Delete ${selectedVisibleMpoIds.length} selected MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""}? This cannot be undone.`, onYes: deleteSelectedMpos })}>Delete Selected</Btn>
+                  <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive ${selectedVisibleMpoIds.length} selected MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""}?`, onYes: archiveSelectedMpos })} disabled={Boolean(deleteProgress)}>Archive Selected</Btn>
+                  <Btn
+                    variant="danger"
+                    size="sm"
+                    onClick={() => setConfirm({ msg: `Delete ${selectedVisibleMpoIds.length} selected MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""}? This cannot be undone.`, onYes: deleteSelectedMpos })}
+                    disabled={Boolean(deleteProgress)}
+                    loading={Boolean(deleteProgress)}
+                  >
+                    {deleteProgress ? `Deleting ${deleteProgress.current}/${deleteProgress.total}` : "Delete Selected"}
+                  </Btn>
                 </div>
               </div>
             </Card>
@@ -4464,7 +4534,22 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       </div>
 
       {/* Step bar */}
-      <div style={{ display: "flex", gap: 0, marginBottom: 24, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 11, overflow: "hidden" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 0,
+          marginBottom: 24,
+          background: "color-mix(in srgb, var(--bg2) 92%, transparent)",
+          border: "1px solid var(--border)",
+          borderRadius: 11,
+          overflow: "hidden",
+          position: "sticky",
+          top: 14,
+          zIndex: 25,
+          backdropFilter: "blur(10px)",
+          boxShadow: "0 10px 24px rgba(0,0,0,.18)",
+        }}
+      >
         {stepLabels.map((s, i) => (
           <button key={i} onClick={() => setStep(i + 1)}
             style={{ flex: 1, padding: "11px 6px", border: "none", background: step === i + 1 ? "var(--accent)" : "transparent", color: step === i + 1 ? "#000" : step > i + 1 ? "var(--green)" : "var(--text2)", fontFamily: "'Syne',sans-serif", fontWeight: 600, fontSize: 12, cursor: "pointer", borderRight: i < 3 ? "1px solid var(--border)" : "none", transition: "all .18s" }}>
