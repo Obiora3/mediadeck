@@ -4527,26 +4527,32 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
         </Modal>
       )}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+      <div
+        style={{
+          position: "sticky",
+          top: 14,
+          zIndex: 25,
+          marginBottom: 24,
+          paddingBottom: 2,
+          background: "color-mix(in srgb, var(--bg) 82%, transparent)",
+          backdropFilter: "blur(10px)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
         <Btn variant="ghost" size="sm" onClick={() => { if (window.confirm("Leave this MPO form? Your latest draft has been autosaved and can be restored later.")) setView("list"); }}>← All MPOs</Btn>
         <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 22 }}>{editId ? "Edit MPO" : "New MPO"}</h1>
         {editId && <Badge color="accent">Editing</Badge>}
-      </div>
+        </div>
 
       {/* Step bar */}
       <div
         style={{
           display: "flex",
           gap: 0,
-          marginBottom: 24,
           background: "color-mix(in srgb, var(--bg2) 92%, transparent)",
           border: "1px solid var(--border)",
           borderRadius: 11,
           overflow: "hidden",
-          position: "sticky",
-          top: 14,
-          zIndex: 25,
-          backdropFilter: "blur(10px)",
           boxShadow: "0 10px 24px rgba(0,0,0,.18)",
         }}
       >
@@ -4556,6 +4562,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
             <span style={{ display: "block", fontSize: 9, opacity: .75, marginBottom: 1 }}>STEP {i + 1}</span>{s}
           </button>
         ))}
+      </div>
       </div>
 
       {/* Step 1 */}
