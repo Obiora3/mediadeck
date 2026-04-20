@@ -55,7 +55,7 @@ import {
   MPO_STATUS_COLORS,
 } from "./constants/mpoWorkflow";
 import { DEFAULT_SESSION_HOURS, DEFAULT_APP_SETTINGS, mergeAppSettings } from "./constants/appDefaults";
-import { loadAppUserFromSupabase, persistSignatureForUser, updateProfileInSupabase } from "./services/users";
+import { loadAppUserFromSupabase, buildFallbackAppUser, persistSignatureForUser, updateProfileInSupabase } from "./services/users";
 import {
   normalizeAgencyCode,
   findExistingAgencyByName,
@@ -284,20 +284,43 @@ export default function App() {
 // MPOs now come from Supabase
 
   const [authReady, setAuthReady] = useState(false);
+  const mpoBulkImportRef = useRef(false);
+  const refreshMposRef = useRef(async () => {});
+  const mpoRefreshTimerRef = useRef(null);
+  const mpoRefreshInFlightRef = useRef(false);
+  const mpoRefreshQueuedRef = useRef(false);
+
+  const resetWorkspaceState = useCallback(() => {
+    setPage("dashboard");
+    setUser(null);
+    setAuthUser(null);
+    setVendors([]);
+    setClients([]);
+    setCampaigns([]);
+    setRates([]);
+    setMpos([]);
+    setReceivables([]);
+    setReceivablesSync(getReceivablesSyncMeta("local"));
+    setMembers([]);
+    setNotifications([]);
+    setAlertsOpen(false);
+    setSettingsOpenSection(null);
+    _setAppSettings(getAppSettings());
+  }, []);
 
   useEffect(() => {
     let mounted = true;
     const timeout = setTimeout(() => {
       if (mounted) setAuthReady(true);
-    }, 5000);
+    }, 6000);
 
     const bootstrapAuth = async () => {
       try {
         const { data } = await supabase.auth.getSession();
         if (!mounted) return;
         setAuthUser(data?.session?.user || null);
-      } catch (e) {
-        console.error("Failed to bootstrap auth:", e);
+      } catch (error) {
+        console.error("Failed to bootstrap auth:", error);
       } finally {
         if (mounted) setAuthReady(true);
         clearTimeout(timeout);
@@ -306,7 +329,9 @@ export default function App() {
 
     bootstrapAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!mounted) return;
       setAuthUser(session?.user || null);
       setAuthReady(true);
@@ -323,30 +348,44 @@ export default function App() {
   useEffect(() => {
     let active = true;
 
-    const loadUser = async () => {
+    const hydrateUser = async () => {
       if (!authUser?.id) {
-        if (active) setUser(null);
+        if (active) {
+          resetWorkspaceState();
+          setAuthReady(true);
+        }
         return;
       }
 
       try {
-        const agencyId = await ensureAgencyForUser(authUser);
+        let agencyId = authUser.user_metadata?.agency_id || null;
+        try {
+          agencyId = await ensureAgencyForUser(authUser);
+        } catch (agencyError) {
+          console.error("Failed to ensure agency for user:", agencyError);
+        }
         const appUser = await loadAppUserFromSupabase(authUser);
 
-        if (active) {
-          setUser(appUser ? { ...appUser, agencyId: appUser.agencyId || agencyId || null } : null);
-        }
-      } catch (e) {
-        console.error("Failed to load user:", e);
-        if (active) {
-          setUser(null);
-        }
+        if (!active) return;
+
+        setUser(
+          appUser
+            ? { ...appUser, agencyId: appUser.agencyId || agencyId || null }
+            : buildFallbackAppUser(authUser, agencyId)
+        );
+      } catch (error) {
+        console.error("Failed to load user:", error);
+        if (!active) return;
+        setUser(buildFallbackAppUser(authUser));
       }
     };
 
-    loadUser();
-    return () => { active = false; };
-  }, [authUser?.id]);
+    hydrateUser();
+
+    return () => {
+      active = false;
+    };
+  }, [authUser?.id, resetWorkspaceState]);
 
   useEffect(() => {
     if (!user?.agencyId) {
@@ -569,9 +608,43 @@ export default function App() {
     const refreshRates = async () => {
       try { setRates(await fetchRatesFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime rates refresh failed:", error); }
     };
-    const refreshMpos = async () => {
-      try { setMpos(await fetchMposFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime MPO refresh failed:", error); }
+    const refreshMpos = async (options = {}) => {
+      const { immediate = false } = options || {};
+      const runRefresh = async () => {
+        if (mpoRefreshInFlightRef.current) {
+          mpoRefreshQueuedRef.current = true;
+          return;
+        }
+        mpoRefreshInFlightRef.current = true;
+        try {
+          setMpos(await fetchMposFromSupabase(user.agencyId));
+        } catch (error) {
+          console.error("Realtime MPO refresh failed:", error);
+        } finally {
+          mpoRefreshInFlightRef.current = false;
+          if (mpoRefreshQueuedRef.current) {
+            mpoRefreshQueuedRef.current = false;
+            await refreshMpos({ immediate: true });
+          }
+        }
+      };
+
+      if (mpoRefreshTimerRef.current) {
+        clearTimeout(mpoRefreshTimerRef.current);
+        mpoRefreshTimerRef.current = null;
+      }
+
+      if (immediate) {
+        await runRefresh();
+        return;
+      }
+
+      mpoRefreshTimerRef.current = setTimeout(() => {
+        mpoRefreshTimerRef.current = null;
+        runRefresh();
+      }, 1200);
     };
+    refreshMposRef.current = refreshMpos;
     const refreshMembers = async () => {
       try { setMembers(await fetchAgencyMembersFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime members refresh failed:", error); }
     };
@@ -603,8 +676,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "clients", filter: `agency_id=eq.${user.agencyId}` }, refreshClients)
       .on("postgres_changes", { event: "*", schema: "public", table: "campaigns", filter: `agency_id=eq.${user.agencyId}` }, refreshCampaigns)
       .on("postgres_changes", { event: "*", schema: "public", table: "rates", filter: `agency_id=eq.${user.agencyId}` }, refreshRates)
-      .on("postgres_changes", { event: "*", schema: "public", table: "mpos", filter: `agency_id=eq.${user.agencyId}` }, refreshMpos)
-      .on("postgres_changes", { event: "*", schema: "public", table: "mpo_spots" }, refreshMpos)
+      .on("postgres_changes", { event: "*", schema: "public", table: "mpos", filter: `agency_id=eq.${user.agencyId}` }, async () => { if (mpoBulkImportRef.current) return; await refreshMpos(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "app_settings", filter: `agency_id=eq.${user.agencyId}` }, refreshSettings)
       .on("postgres_changes", { event: "*", schema: "public", table: "agencies", filter: `id=eq.${user.agencyId}` }, async () => { await refreshUser(); await refreshSettings(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `agency_id=eq.${user.agencyId}` }, async () => { await refreshUser(); await refreshMembers(); })
@@ -619,9 +691,24 @@ export default function App() {
     channel.subscribe();
 
     return () => {
+      refreshMposRef.current = async () => {};
+      if (mpoRefreshTimerRef.current) {
+        clearTimeout(mpoRefreshTimerRef.current);
+        mpoRefreshTimerRef.current = null;
+      }
+      mpoRefreshQueuedRef.current = false;
+      mpoRefreshInFlightRef.current = false;
       supabase.removeChannel(channel).catch(() => {});
     };
   }, [user?.agencyId, user?.id, authUser?.id, receivablesSync.mode]);
+
+  const handleMpoBulkImportStateChange = (isActive) => {
+    mpoBulkImportRef.current = !!isActive;
+  };
+
+  const requestMpoRefresh = async () => {
+    await refreshMposRef.current?.({ immediate: true });
+  };
 
   const unreadNotifications = notifications.filter(notification => !notification.readAt).length;
 
@@ -773,21 +860,9 @@ export default function App() {
     }
   }, [user?.agencyId, receivablesSync.mode, switchReceivablesToLocalFallback, updateLocalReceivableStatus]);
 
-  const handleLogin = () => {};
-
   const handleLogout = async () => {
-    setPage("dashboard");
-    setUser(null);
-    setAuthUser(null);
-    setVendors([]);
-    setClients([]);
-    setCampaigns([]);
-    setRates([]);
-    setMpos([]);
-    setReceivables([]);
-    setReceivablesSync(getReceivablesSyncMeta("local"));
-    setMembers([]);
-    _setAppSettings(getAppSettings());
+    resetWorkspaceState();
+
     try {
       await supabase.auth.signOut({ scope: "local" });
     } catch (e) {
@@ -829,7 +904,7 @@ if (!user) {
   return (
     <>
       <GlobalStyle theme={theme} />
-      <AuthPage onLogin={handleLogin} />
+      <AuthPage />
     </>
   );
 }
@@ -872,9 +947,9 @@ if (!user) {
           {page === "campaigns"  && <CampaignsPage {...pp} user={user} />}
           {page === "rates"      && <RatesPage {...pp} user={user} />}
           {page === "finance"    && <FinancePage user={user} vendors={vendors} clients={clients} campaigns={campaigns} mpos={mpos} receivables={receivables} receivablesMeta={receivablesSync} onSaveReceivable={handleSaveReceivableRecord} onRemoveReceivable={handleRemoveReceivableRecord} onLogReceivablePayment={handleLogReceivablePayment} onUpdateReceivableStatus={handleUpdateReceivableStatus} />}
-          {page === "mpo"        && <MPOPage {...pp} user={user} appSettings={appSettings} />}
+          {page === "mpo"        && <MPOPage {...pp} user={user} appSettings={appSettings} onBulkImportStateChange={handleMpoBulkImportStateChange} requestMpoRefresh={requestMpoRefresh} />}
           {page === "reports"    && <ReportsPage {...pp} activeOnly={activeOnly} fmtN={fmtN} MPO_STATUS_LABELS={MPO_STATUS_LABELS} PrintPreview={PrintPreview} buildCSV={buildCSV} />}
-          {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} initialSectionRequest={settingsOpenSection} />}
+          {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} setNotifications={setNotifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} initialSectionRequest={settingsOpenSection} />}
         </main>
       </div>
     </>

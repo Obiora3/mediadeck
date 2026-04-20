@@ -13,6 +13,44 @@ const DEFAULT_MPO_TERMS = [
 const MPO_ATTACHMENTS_BUCKET = "mpo-attachments";
 const sanitizeAttachmentFileName = (name = "file") => name.replace(/[^a-zA-Z0-9._-]+/g, "_");
 
+const MPO_SPOT_META_PREFIX = "__MSP_META__";
+const encodeMpoSpotMeta = (spot = {}) => {
+  const payload = {
+    wd: spot?.wd || "",
+    bonusSpots: Number(spot?.bonusSpots) || 0,
+    paidSpots: Number(spot?.paidSpots) || 0,
+    isComplimentary: !!spot?.isComplimentary,
+  };
+  return `${MPO_SPOT_META_PREFIX}${JSON.stringify(payload)}`;
+};
+const decodeMpoSpotMeta = (rawWd = "") => {
+  const value = String(rawWd || "");
+  if (!value.startsWith(MPO_SPOT_META_PREFIX)) {
+    return {
+      wd: value,
+      bonusSpots: 0,
+      paidSpots: 0,
+      isComplimentary: false,
+    };
+  }
+  try {
+    const parsed = JSON.parse(value.slice(MPO_SPOT_META_PREFIX.length));
+    return {
+      wd: parsed?.wd || "",
+      bonusSpots: Number(parsed?.bonusSpots) || 0,
+      paidSpots: Number(parsed?.paidSpots) || 0,
+      isComplimentary: !!parsed?.isComplimentary,
+    };
+  } catch {
+    return {
+      wd: value,
+      bonusSpots: 0,
+      paidSpots: 0,
+      isComplimentary: false,
+    };
+  }
+};
+
 const mpoParentSelect = `
   id,
   agency_id,
@@ -112,19 +150,26 @@ export const uploadMpoAttachmentAndGetUrl = async ({ agencyId, mpoId, kind, file
   return data?.publicUrl || "";
 };
 
-const mapMpoSpotFromSupabase = (data) => ({
-  id: data.id,
-  programme: data.programme || "",
-  wd: data.wd || "",
-  timeBelt: data.time_belt || "",
-  material: data.material || "",
-  duration: data.duration ? String(data.duration) : "30",
-  rateId: data.rate_id || "",
-  ratePerSpot: data.rate_per_spot ?? 0,
-  spots: String(data.spots ?? 0),
-  calendarDays: Array.isArray(data.calendar_days) ? data.calendar_days : [],
-  scheduleMonth: data.schedule_month || "",
-});
+const mapMpoSpotFromSupabase = (data) => {
+  const meta = decodeMpoSpotMeta(data.wd || "");
+  return ({
+    id: data.id,
+  agencyId: data.agency_id || "",
+    programme: data.programme || "",
+    wd: meta.wd || "",
+    timeBelt: data.time_belt || "",
+    material: data.material || "",
+    duration: data.duration ? String(data.duration) : "30",
+    rateId: data.rate_id || "",
+    ratePerSpot: data.rate_per_spot ?? 0,
+    spots: String(data.spots ?? 0),
+    bonusSpots: meta.bonusSpots ?? 0,
+    paidSpots: meta.paidSpots ?? 0,
+    isComplimentary: !!meta.isComplimentary,
+    calendarDays: Array.isArray(data.calendar_days) ? data.calendar_days : [],
+    scheduleMonth: data.schedule_month || "",
+  });
+};
 
 const mapMpoFromSupabase = (data, spots = []) => ({
   id: data.id,
@@ -197,7 +242,7 @@ const mapMpoFromSupabase = (data, spots = []) => ({
 
 const mapMpoSpotToSupabase = (spot, index = 0) => ({
   programme: spot.programme || null,
-  wd: spot.wd || null,
+  wd: encodeMpoSpotMeta(spot),
   time_belt: spot.timeBelt || null,
   material: spot.material || null,
   duration: spot.duration ? String(spot.duration) : "30",
@@ -209,27 +254,133 @@ const mapMpoSpotToSupabase = (spot, index = 0) => ({
   sort_order: index,
 });
 
-export const fetchMposFromSupabase = async (agencyId) => {
+const MPO_SPOTS_PAGE_SIZE = 1000;
+const MPO_PARENTS_PAGE_SIZE = 200;
+
+const fetchMpoParentsForAgency = async (agencyId) => {
   if (!agencyId) return [];
 
-  const { data: mpoRows, error: mpoError } = await supabase
+  const allRows = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + MPO_PARENTS_PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from("mpos")
+      .select(mpoParentSelect)
+      .eq("agency_id", agencyId)
+      .order("created_at", { ascending: false })
+      .range(from, to);
+
+    if (error) throw error;
+
+    const pageRows = data || [];
+    allRows.push(...pageRows);
+
+    if (pageRows.length < MPO_PARENTS_PAGE_SIZE) break;
+    from += MPO_PARENTS_PAGE_SIZE;
+  }
+
+  return allRows;
+};
+
+const fetchMpoSpotsForIds = async (mpoIds = []) => {
+  if (!mpoIds.length) return [];
+
+  const allRows = [];
+  const chunkSize = 100;
+
+  for (let chunkStart = 0; chunkStart < mpoIds.length; chunkStart += chunkSize) {
+    const chunkIds = mpoIds.slice(chunkStart, chunkStart + chunkSize);
+    let from = 0;
+
+    while (true) {
+      const to = from + MPO_SPOTS_PAGE_SIZE - 1;
+      const { data, error } = await supabase
+        .from("mpo_spots")
+        .select(mpoSpotSelect)
+        .in("mpo_id", chunkIds)
+        .order("mpo_id", { ascending: true })
+        .order("sort_order", { ascending: true })
+        .range(from, to);
+
+      if (error) throw error;
+
+      const pageRows = data || [];
+      allRows.push(...pageRows);
+
+      if (pageRows.length < MPO_SPOTS_PAGE_SIZE) break;
+      from += MPO_SPOTS_PAGE_SIZE;
+    }
+  }
+
+  return allRows;
+};
+
+export const fetchMappedMpoById = async (mpoId) => {
+  const { data: parent, error: parentError } = await supabase
+    .from("mpos")
+    .select(mpoParentSelect)
+    .eq("id", mpoId)
+    .single();
+  if (parentError) throw parentError;
+
+  const { data: spotRows, error: spotError } = await supabase
+    .from("mpo_spots")
+    .select(mpoSpotSelect)
+    .eq("mpo_id", mpoId)
+    .order("sort_order", { ascending: true });
+  if (spotError) throw spotError;
+
+  return mapMpoFromSupabase(parent, (spotRows || []).map(mapMpoSpotFromSupabase));
+};
+
+export const fetchMappedMpoByAgencyAndNo = async (agencyId, mpoNo) => {
+  if (!agencyId || !mpoNo) return null;
+
+  const { data: parent, error: parentError } = await supabase
     .from("mpos")
     .select(mpoParentSelect)
     .eq("agency_id", agencyId)
-    .order("created_at", { ascending: false });
-  if (mpoError) throw mpoError;
+    .eq("mpo_no", mpoNo)
+    .maybeSingle();
 
+  if (parentError) throw parentError;
+  if (!parent) return null;
+  return mapMpoFromSupabase(parent, []);
+};
+
+const deleteMpoAttachmentsFromSupabase = async (agencyId, mpoId) => {
+  if (!agencyId || !mpoId) return;
+
+  const attachmentKinds = ["signedMpo", "invoice", "proof"];
+
+  await Promise.all(
+    attachmentKinds.map(async (kind) => {
+      const folder = `${agencyId}/${mpoId}/${kind}`;
+      const { data: files, error: listError } = await supabase.storage
+        .from(MPO_ATTACHMENTS_BUCKET)
+        .list(folder, { limit: 1000 });
+
+      if (listError) return;
+
+      const filePaths = (files || [])
+        .filter((item) => item && item.name && !item.id?.endsWith?.("/"))
+        .map((item) => `${folder}/${item.name}`);
+
+      if (!filePaths.length) return;
+
+      await supabase.storage.from(MPO_ATTACHMENTS_BUCKET).remove(filePaths);
+    })
+  );
+};
+
+export const fetchMposFromSupabase = async (agencyId) => {
+  if (!agencyId) return [];
+
+  const mpoRows = await fetchMpoParentsForAgency(agencyId);
   const ids = (mpoRows || []).map((row) => row.id);
-  let spotsRows = [];
-  if (ids.length) {
-    const { data, error } = await supabase
-      .from("mpo_spots")
-      .select(mpoSpotSelect)
-      .in("mpo_id", ids)
-      .order("sort_order", { ascending: true });
-    if (error) throw error;
-    spotsRows = data || [];
-  }
+  const spotsRows = await fetchMpoSpotsForIds(ids);
 
   const spotsByMpo = spotsRows.reduce((acc, row) => {
     (acc[row.mpo_id] ||= []).push(mapMpoSpotFromSupabase(row));
@@ -418,23 +569,6 @@ export const restoreMpoInSupabase = async (mpoId) => {
   return mapMpoFromSupabase(data, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
 
-
-export const deleteMpoInSupabase = async (mpoId) => {
-  const { error: spotsError } = await supabase
-    .from("mpo_spots")
-    .delete()
-    .eq("mpo_id", mpoId);
-  if (spotsError) throw spotsError;
-
-  const { error } = await supabase
-    .from("mpos")
-    .delete()
-    .eq("id", mpoId);
-  if (error) throw error;
-
-  return mpoId;
-};
-
 export const updateMpoStatusInSupabase = async (mpoId, status) => {
   const { data, error } = await supabase.from("mpos").update({ status }).eq("id", mpoId).select(mpoParentSelect).single();
   if (error) throw error;
@@ -486,4 +620,27 @@ export const generateNextMpoNoFromSupabase = async (brand = "MPO") => {
     throw error;
   }
   return data;
+};
+
+
+export const deleteMpoInSupabase = async (mpoId) => {
+  if (!mpoId) throw new Error("No MPO selected for deletion.");
+
+  const existing = await fetchMappedMpoById(mpoId);
+
+  const { error: spotDeleteError } = await supabase
+    .from("mpo_spots")
+    .delete()
+    .eq("mpo_id", mpoId);
+  if (spotDeleteError) throw spotDeleteError;
+
+  const { error: parentDeleteError } = await supabase
+    .from("mpos")
+    .delete()
+    .eq("id", mpoId);
+  if (parentDeleteError) throw parentDeleteError;
+
+  await deleteMpoAttachmentsFromSupabase(existing.agencyId || existing.agency_id || "", mpoId);
+
+  return existing;
 };

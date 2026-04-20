@@ -7,6 +7,40 @@ const escapeHtml = (value) => String(value ?? "")
   .replace(/"/g, "&quot;")
   .replace(/'/g, "&#39;");
 const safeText = (value) => String(value ?? "").replace(/[\u0000-\u001F\u007F]/g, " ").trim();
+
+export const formatNairaExportValue = (value) => {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string" && value.trim().startsWith("₦")) return value;
+  const num = Number(String(value).replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(num)) return value;
+  return `₦${num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+export const formatExportRowsWithCurrency = (rows = [], currencyColumns = []) =>
+  (rows || []).map((row) =>
+    (row || []).map((cell, index) =>
+      currencyColumns.includes(index) ? formatNairaExportValue(cell) : cell
+    )
+  );
+
+const getSpotScheduledCount = (spot = {}) => (
+  Array.isArray(spot?.ad) && spot.ad.length
+    ? spot.ad.length
+    : Array.isArray(spot?.calendarDays) && spot.calendarDays.length
+      ? spot.calendarDays.length
+      : (parseFloat(spot?.spots) || 0)
+);
+
+const isComplimentaryExportSpot = (spot = {}) => Boolean(spot?.isComplimentary || Number(spot?.ratePerSpot || 0) <= 0);
+
+const getSpotBonusCount = (spot = {}) => {
+  if (isComplimentaryExportSpot(spot)) return getSpotScheduledCount(spot);
+  const raw = Number(spot?.bonusSpots) || 0;
+  const total = getSpotScheduledCount(spot);
+  return Math.max(0, Math.min(raw, total));
+};
+
+const getSpotPaidCount = (spot = {}) => Math.max(0, getSpotScheduledCount(spot) - getSpotBonusCount(spot));
 export const sanitizeMPOForExport = (mpo) => ({
   ...mpo,
   mpoNo: escapeHtml(safeText(mpo?.mpoNo)),
@@ -48,12 +82,8 @@ export const buildProgrammeCostLines = (spots = []) => {
     const programme = String(spot?.programme || '').trim() || 'Untitled Programme';
     const duration = String(spot?.duration || '').trim() || '';
     const rate = parseFloat(spot?.ratePerSpot) || 0;
-    const cnt = Array.isArray(spot?.ad) && spot.ad.length
-      ? spot.ad.length
-      : Array.isArray(spot?.calendarDays) && spot.calendarDays.length
-        ? spot.calendarDays.length
-        : (parseFloat(spot?.spots) || 0);
-    const key = programme.toLowerCase();
+    const cnt = getSpotPaidCount(spot);
+    const key = `${programme.toLowerCase()}|${duration}`;
     if (!grouped.has(key)) grouped.set(key, { programme, duration, cnt: 0, rate });
     const entry = grouped.get(key);
     entry.cnt += cnt;
@@ -68,21 +98,6 @@ export const buildCSV = (rows, headers) => {
   const esc = v => `"${String(v ?? "").replace(/"/g,'""')}"`;
   return [headers.map(esc).join(","), ...rows.map(r => r.map(esc).join(","))].join("\n");
 };
-
-
-export const formatNairaExportValue = (value) => {
-  if (typeof value === "string" && value.trim().startsWith("₦")) return value;
-  const num = Number(value);
-  if (!Number.isFinite(num)) return value ?? "";
-  return `₦${num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-};
-
-export const formatExportRowsWithCurrency = (rows, currencyColumns = []) =>
-  (rows || []).map((row) =>
-    (row || []).map((cell, index) =>
-      currencyColumns.includes(index) ? formatNairaExportValue(cell) : cell
-    )
-  );
 
 export const loadBrowserScript = (src, readyCheck) => new Promise((resolve, reject) => {
   try {
@@ -153,7 +168,7 @@ export const buildMPOPdf = (mpo) => {
   const dNums = Array.from({length:dim},(_,i)=>i+1);
 
   /* costing */
-  const costLines = sWD.map(s=>({ programme:s.programme||'', material:s.material||'', duration:s.duration||'', cnt:s.ad.length||parseInt(s.spots)||0, rate:parseFloat(s.ratePerSpot)||0 }));
+  const costLines = sWD.map(s=>({ programme:s.programme||'', material:s.material||'', duration:s.duration||'', cnt:getSpotPaidCount(s), rate:parseFloat(s.ratePerSpot)||0 }));
   costLines.forEach(l=>l.gross=l.cnt*l.rate);
   const subTotal  = costLines.reduce((a,l)=>a+l.gross,0);
   const vdPct     = parseFloat(mpo.discPct)||0;
@@ -168,6 +183,10 @@ export const buildMPOPdf = (mpo) => {
   const vatRate   = (parseFloat(mpo.vatPct) || 7.5) / 100;
   const vatAmt    = netAmt * vatRate;
   const totalPayable = netAmt+vatAmt;
+  const totalScheduledSpots = sWD.reduce((sum, spot) => sum + getSpotScheduledCount(spot), 0);
+  const totalBonusSpots = sWD.reduce((sum, spot) => sum + getSpotBonusCount(spot), 0);
+  const totalPaidSpots = sWD.reduce((sum, spot) => sum + getSpotPaidCount(spot), 0);
+  const bonusDeductionValue = sWD.reduce((sum, spot) => sum + (getSpotBonusCount(spot) * (parseFloat(spot?.ratePerSpot) || 0)), 0);
 
   /* ── PDF engine ──────────────────────────────────────────── */
   const PW=595,PH=842;
@@ -353,6 +372,10 @@ export const buildMPOPdf = (mpo) => {
 
   /* costing summary */
   const summaryRows=[
+    ['Total Scheduled Spots',                              String(totalScheduledSpots), false,false],
+    ['Complimentary / Bonus Spots',                           String(totalBonusSpots), false,false],
+    ['Total Paid Spots',                                      String(totalPaidSpots), false,false],
+
     ['Sub Total',                                          fmtN(subTotal),    false,false],
     ...(vdPct>0?[
       [`Volume Discount (${Math.round(vdPct*100)}%)`,     `- ${fmtN(vdAmt)}`,false,false],
@@ -444,6 +467,16 @@ export const buildMPOHTML = (mpo) => {
   const DAY  = ["SU","M","T","W","TH","FR","SA"];
   const yr   = parseInt(year) || new Date().getFullYear();
 
+  const resolveCanonicalMonthName = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    return FULL.find((monthName) => {
+      const candidate = monthName.toLowerCase();
+      return lower === candidate || lower.startsWith(`${candidate} `) || lower.includes(candidate);
+    }) || "";
+  };
+
   const resolveMIdx = m => {
     const u = (m||"").trim().toUpperCase();
     let i = MN.indexOf(u.slice(0,3));
@@ -451,8 +484,21 @@ export const buildMPOHTML = (mpo) => {
     return i;
   };
 
-  /* Determine which months to render */
-  const allMonths = (mpo.months && mpo.months.length > 0) ? mpo.months : (month ? [month] : []);
+  /* Determine which months to render. Prefer the parent MPO months, but
+     recover missing month tabs from the actual scheduled spot rows. */
+  const configuredMonths = Array.isArray(mpo.months)
+    ? mpo.months.map(resolveCanonicalMonthName).filter(Boolean)
+    : [];
+  const fallbackMonth = resolveCanonicalMonthName(month);
+  const spotMonths = (spots || [])
+    .map((spot) => resolveCanonicalMonthName(spot?.scheduleMonth))
+    .filter(Boolean);
+  const allMonths = FULL.filter((monthName) =>
+    configuredMonths.includes(monthName) ||
+    spotMonths.includes(monthName) ||
+    (!configuredMonths.length && !spotMonths.length && fallbackMonth === monthName)
+  );
+  const unassignedSpotMonth = fallbackMonth || allMonths[0] || "";
 
   /* Build one calendar section for a given month and its spots */
   const buildMonthBlock = (monthName, monthSpots) => {
@@ -464,87 +510,106 @@ export const buildMPOHTML = (mpo) => {
     const WD = {MON:1,TUE:2,WED:3,THU:4,FRI:5,SAT:6,SUN:0};
     const sWD = monthSpots.map(s => {
       let ad = [];
-      if (s.calendarDays && s.calendarDays.length) {
-        ad = s.calendarDays.map(Number);
-      } else if (s.wd) {
-        const k = s.wd.toUpperCase();
-        const set = k==="DAILY"?[0,1,2,3,4,5,6]:k==="WEEKDAYS"?[1,2,3,4,5]:k==="WEEKENDS"?[0,6]:WD[k]!==undefined?[WD[k]]:[];
-        for(let d=1;d<=dim;d++) if(mIdx>=0 && set.includes(new Date(yr,mIdx,d).getDay())) ad.push(d);
-      }
-      return {...s, ad};
-    });
-    const dayCountForSpot = (spot, day) =>
-  (spot.ad || []).reduce(
-    (count, value) => count + (Number(value) === Number(day) ? 1 : 0),
-    0
-  );
 
-    const dNums   = Array.from({length:dim},(_,i)=>i+1);
+      // Always trust the exact saved schedule first so repeated days
+      // (multiple spots on the same day) are preserved in preview/export.
+      if (Array.isArray(s.calendarDays) && s.calendarDays.length) {
+        ad = s.calendarDays.map(Number).filter(Number.isFinite);
+      } else if (Array.isArray(s.ad) && s.ad.length) {
+        ad = s.ad.map(Number).filter(Number.isFinite);
+      } else if (s.wd) {
+        const k = String(s.wd || "").toUpperCase();
+        const set = k==="DAILY" ? [0,1,2,3,4,5,6]
+          : k==="WEEKDAYS" ? [1,2,3,4,5]
+          : k==="WEEKENDS" ? [0,6]
+          : WD[k] !== undefined ? [WD[k]]
+          : [];
+        for (let d = 1; d <= dim; d++) {
+          if (mIdx >= 0 && set.includes(new Date(yr, mIdx, d).getDay())) ad.push(d);
+        }
+      }
+      return { ...s, ad };
+    });
+
+    const dayCountForSpot = (spot, day) =>
+      (spot.ad || []).reduce((count, value) => count + (Number(value) === Number(day) ? 1 : 0), 0);
+
+    const dNums = Array.from({ length: dim }, (_, i) => i + 1);
     const dateRow = dNums.map(d =>
-      '<th style="background:#e8f0f8;color:#000;font-size:6.5px;padding:1px 0;text-align:center;border:1px solid #aaa;min-width:14px;width:14px;font-weight:700">'+d+'</th>').join("");
-    const dayRow  = mIdx >= 0
+      '<th style="background:#e8f0f8;color:#000;font-size:6.5px;padding:1px 0;text-align:center;border:1px solid #aaa;min-width:14px;width:14px;font-weight:700">'+d+'</th>'
+    ).join("");
+    const dayRow = mIdx >= 0
       ? dNums.map(d => '<td style="background:#eef3fa;font-size:6px;padding:1px 0;text-align:center;border:1px solid #aaa;font-weight:500;color:#444">'+getDN(d)+'</td>').join("")
-      : dNums.map(()=>'<td style="border:1px solid #aaa"></td>').join("");
+      : dNums.map(() => '<td style="border:1px solid #aaa"></td>').join("");
 
     const order = [], groups = {};
     sWD.forEach(s => {
-      const k = (s.timeBelt||"GENERAL").trim();
-      if (!groups[k]) { groups[k]=[]; order.push(k); }
-      groups[k].push(s);
+      const key = (s.timeBelt || "GENERAL").trim();
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(s);
     });
 
     let calRowsHtml = "";
-    let grandPaid   = 0;
+    let monthTotalSpots = 0;
 
     order.forEach(belt => {
       const rows = groups[belt];
-      let bTotal = 0;
-      rows.forEach((s, si) => {
-        const cnt = s.ad.length || parseInt(s.spots)||0;
-        bTotal    += cnt;
-        grandPaid += cnt;
+      rows.forEach((s, index) => {
+        const cnt = Array.isArray(s.ad) ? s.ad.length : 0;
+        monthTotalSpots += cnt;
         const cells = dNums.map(d =>
-  '<td style="text-align:center;font-size:7.5px;padding:1px 0;border:1px solid #ddd;font-weight:700">' +
-    (dayCountForSpot(s, d) > 0 ? String(dayCountForSpot(s, d)) : '') +
-  '</td>'
-).join("");
-        const isFirst = si === 0;
-        const monthTd = isFirst
-          ? '<td rowspan="'+rows.length+'" style="font-size:7.5px;padding:2px 3px;border:1px solid #aaa;font-weight:700;text-align:center;vertical-align:middle;white-space:nowrap;background:#f5f8fd">'+monthLabel+'</td><td rowspan="'+rows.length+'" style="font-size:7.5px;padding:2px 5px;border:1px solid #aaa;font-weight:700;vertical-align:middle;white-space:nowrap;background:#f5f8fd">'+belt+'</td>'
+          '<td style="text-align:center;font-size:7.5px;padding:1px 0;border:1px solid #ddd;font-weight:700">'
+          + (dayCountForSpot(s, d) > 0 ? String(dayCountForSpot(s, d)) : '')
+          + '</td>'
+        ).join("");
+        const monthTd = index === 0
+          ? '<td rowspan="'+rows.length+'" style="font-size:7.5px;padding:2px 3px;border:1px solid #aaa;font-weight:700;text-align:center;vertical-align:middle;white-space:nowrap;background:#f5f8fd">'+monthLabel+'</td>'
+            + '<td rowspan="'+rows.length+'" style="font-size:7.5px;padding:2px 5px;border:1px solid #aaa;font-weight:700;vertical-align:middle;white-space:nowrap;background:#f5f8fd">'+belt+'</td>'
           : "";
-        calRowsHtml += '<tr>'+monthTd+'<td style="font-size:7.5px;padding:2px 5px;border:1px solid #aaa;white-space:nowrap">'+(s.programme||"")+'</td>'+cells+'<td style="text-align:center;font-weight:700;font-size:8px;padding:2px 3px;border:1px solid #aaa;background:#dce8f4">'+cnt+'</td><td style="font-size:7.5px;padding:2px 5px;border:1px solid #aaa;white-space:nowrap">'+(s.material||"")+'</td></tr>';
+
+        calRowsHtml += '<tr>'
+          + monthTd
+          + '<td style="font-size:7.5px;padding:2px 5px;border:1px solid #aaa;white-space:nowrap">'+(s.programme || "")+'</td>'
+          + cells
+          + '<td style="text-align:center;font-weight:700;font-size:8px;padding:2px 3px;border:1px solid #aaa;background:#dce8f4">'+cnt+'</td>'
+          + '<td style="font-size:7.5px;padding:2px 5px;border:1px solid #aaa;white-space:nowrap">'+(s.material || "")+'</td>'
+          + '</tr>';
       });
-      if (rows.length > 1) {
-        calRowsHtml += '<tr style="background:#dce8f4"><td colspan="3" style="border:1px solid #aaa;padding:2px 4px;font-weight:700;font-size:7.5px;text-align:right"></td>'+dNums.map(()=>'<td style="border:1px solid #aaa"></td>').join("")+'<td style="text-align:center;font-weight:800;font-size:9px;border:1px solid #aaa;padding:2px 3px;background:#c4d8ee">'+bTotal+'</td><td style="border:1px solid #aaa"></td></tr>';
-      }
     });
 
-    const grandRow = '<tr style="background:#fff"><td colspan="'+(dim+5)+'" style="border:1px solid #aaa;padding:3px 6px;font-weight:800;font-size:10px;text-align:right">'+grandPaid+'</td></tr>';
+    const totalOnlyRow = '<tr style="background:#fff">'
+      + '<td colspan="'+(dim+3)+'" style="border:1px solid #aaa;padding:3px 6px"></td>'
+      + '<td style="text-align:center;font-weight:800;font-size:11px;border:1px solid #aaa;padding:3px 3px;background:#eef3fa">'+monthTotalSpots+'</td>'
+      + '<td style="border:1px solid #aaa"></td>'
+      + '</tr>';
 
     const headerHtml =
-      '<div style="font-family:Arial,Helvetica,sans-serif;font-size:8.5px;font-weight:700;color:#1a3a6b;text-align:center;margin:10px 0 4px;letter-spacing:2px;text-transform:uppercase;border-bottom:1px solid #c0d0e8;padding-bottom:3px">'+monthLabel+' SCHEDULE</div>' +
-      '<div class="cal-wrap"><table class="cal"><thead><tr>' +
-      '<th style="background:#1a3a6b;color:#fff;font-size:7.5px;padding:3px;text-align:center;min-width:40px">MONTH</th>' +
-      '<th style="background:#1a3a6b;color:#fff;font-size:7.5px;padding:3px 5px;text-align:left;min-width:70px">Time Belt</th>' +
-      '<th style="background:#1a3a6b;color:#fff;font-size:7.5px;padding:3px 5px;text-align:left;min-width:80px">Programme</th>' +
-      '<th colspan="'+dim+'" style="background:#1a3a6b;color:#fff;font-size:8px;padding:3px;text-align:center;letter-spacing:5px">SCHEDULE</th>' +
-      '<th style="background:#1a3a6b;color:#fff;font-size:7px;padding:3px 2px;text-align:center;min-width:40px;line-height:1.4">NO OF<br>SPOTS</th>' +
-      '<th style="background:#1a3a6b;color:#fff;font-size:7px;padding:3px 4px;text-align:left;min-width:90px;line-height:1.4">MATERIAL TITLE/<br>SPECIFICATION</th>' +
-      '</tr><tr>' +
-      '<td style="background:#dce8f4;font-size:7px;padding:2px 3px;text-align:center;font-weight:700;border:1px solid #aaa">DATES&#8594;</td>' +
-      '<td style="background:#dce8f4;border:1px solid #aaa"></td>' +
-      '<td style="background:#dce8f4;border:1px solid #aaa"></td>' +
-      dateRow +
-      '<td style="background:#dce8f4;border:1px solid #aaa"></td>' +
-      '<td style="background:#dce8f4;border:1px solid #aaa"></td>' +
-      '</tr><tr>' +
-      '<td style="background:#eef3fa;border:1px solid #aaa"></td>' +
-      '<td style="background:#eef3fa;border:1px solid #aaa"></td>' +
-      '<td style="background:#eef3fa;border:1px solid #aaa"></td>' +
-      dayRow +
-      '<td style="background:#eef3fa;border:1px solid #aaa"></td>' +
-      '<td style="background:#eef3fa;border:1px solid #aaa"></td>' +
-      '</tr></thead><tbody>' + calRowsHtml + grandRow + '</tbody></table></div>';
+      '<div style="font-family:Arial,Helvetica,sans-serif;font-size:8.5px;font-weight:700;color:#1a3a6b;text-align:center;margin:10px 0 4px;letter-spacing:2px;text-transform:uppercase;border-bottom:1px solid #c0d0e8;padding-bottom:3px">'+monthLabel+' SCHEDULE</div>'
+      + '<div class="cal-wrap"><table class="cal"><thead><tr>'
+      + '<th style="background:#1a3a6b;color:#fff;font-size:7.5px;padding:3px;text-align:center;min-width:40px">MONTH</th>'
+      + '<th style="background:#1a3a6b;color:#fff;font-size:7.5px;padding:3px 5px;text-align:left;min-width:70px">Time Belt</th>'
+      + '<th style="background:#1a3a6b;color:#fff;font-size:7.5px;padding:3px 5px;text-align:left;min-width:80px">Programme</th>'
+      + '<th colspan="'+dim+'" style="background:#1a3a6b;color:#fff;font-size:8px;padding:3px;text-align:center;letter-spacing:5px">SCHEDULE</th>'
+      + '<th style="background:#1a3a6b;color:#fff;font-size:7px;padding:3px 2px;text-align:center;min-width:40px;line-height:1.4">NO OF<br>SPOTS</th>'
+      + '<th style="background:#1a3a6b;color:#fff;font-size:7px;padding:3px 4px;text-align:left;min-width:90px;line-height:1.4">MATERIAL TITLE/<br>SPECIFICATION</th>'
+      + '</tr><tr>'
+      + '<td style="background:#dce8f4;font-size:7px;padding:2px 3px;text-align:center;font-weight:700;border:1px solid #aaa">DATES&#8594;</td>'
+      + '<td style="background:#dce8f4;border:1px solid #aaa"></td>'
+      + '<td style="background:#dce8f4;border:1px solid #aaa"></td>'
+      + dateRow
+      + '<td style="background:#dce8f4;border:1px solid #aaa"></td>'
+      + '<td style="background:#dce8f4;border:1px solid #aaa"></td>'
+      + '</tr><tr>'
+      + '<td style="background:#eef3fa;border:1px solid #aaa"></td>'
+      + '<td style="background:#eef3fa;border:1px solid #aaa"></td>'
+      + '<td style="background:#eef3fa;border:1px solid #aaa"></td>'
+      + dayRow
+      + '<td style="background:#eef3fa;border:1px solid #aaa"></td>'
+      + '<td style="background:#eef3fa;border:1px solid #aaa"></td>'
+      + '</tr></thead><tbody>'
+      + calRowsHtml
+      + totalOnlyRow
+      + '</tbody></table></div>';
 
     return { html: headerHtml, sWD };
   };
@@ -558,10 +623,9 @@ export const buildMPOHTML = (mpo) => {
   } else {
     allMonths.forEach(monthName => {
       const monthSpots = (spots||[]).filter(s => {
-        if (!s.scheduleMonth) return true;
-        const sm = (s.scheduleMonth||"").toLowerCase();
-        const mn = (monthName||"").toLowerCase();
-        return sm.startsWith(mn.slice(0,3)) || sm.includes(mn);
+        const spotMonth = resolveCanonicalMonthName(s?.scheduleMonth);
+        if (!spotMonth) return monthName === unassignedSpotMonth;
+        return spotMonth === monthName;
       });
       if (monthSpots.length === 0) return;
       const { html, sWD } = buildMonthBlock(monthName, monthSpots);
@@ -574,6 +638,11 @@ export const buildMPOHTML = (mpo) => {
   }
 
   const firstDur = allSWD.length > 0 ? (allSWD[0].duration||"30")+"SECS" : "30SECS";
+
+  const totalScheduledSpots = allSWD.reduce((sum, spot) => sum + getSpotScheduledCount(spot), 0);
+  const totalBonusSpots = allSWD.reduce((sum, spot) => sum + getSpotBonusCount(spot), 0);
+  const totalPaidSpots = allSWD.reduce((sum, spot) => sum + getSpotPaidCount(spot), 0);
+  const bonusDeductionValue = allSWD.reduce((sum, spot) => sum + (getSpotBonusCount(spot) * (parseFloat(spot?.ratePerSpot) || 0)), 0);
 
   const costLines = buildProgrammeCostLines(allSWD);
 
@@ -601,6 +670,10 @@ export const buildMPOHTML = (mpo) => {
   const cRow    = cPct > 0  ? '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Agency Commission ('+Math.round(cPct*100)+'%)</td><td style="text-align:right;color:#b00">- &#8358; '+fmt(cAmt)+'</td></tr><tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Less Commission</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(afterComm)+'</td></tr>' : "";
   const spRow   = spPct > 0 ? '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">'+(surchLabel||("Surcharge ("+Math.round(spPct*100)+"%)"))+' </td><td style="text-align:right;color:#b25400">+ &#8358; '+fmt(spAmt)+'</td></tr><tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Net After Surcharge</td><td style="text-align:right;font-weight:700">&#8358; '+fmt(netAmt)+'</td></tr>' : "";
   const costBodyRows = costLines.map(l => '<tr><td>'+l.programme+'</td><td style="text-align:center">'+l.duration+'secs</td><td style="text-align:center;font-weight:700">'+l.cnt+'</td><td style="text-align:right">'+fmt(l.rate)+'</td><td style="text-align:right;font-weight:700">'+fmt(l.gross)+'</td></tr>').join("");
+  const scheduleSummaryRows = '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Total Scheduled Spots</td><td style="text-align:right;font-weight:700">'+totalScheduledSpots+'</td></tr>'
+    + '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Complimentary / Bonus Spots</td><td style="text-align:right;font-weight:700;color:#6d28d9">'+totalBonusSpots+'</td></tr>'
+    + '<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">Total Paid Spots</td><td style="text-align:right;font-weight:700;color:#14532d">'+totalPaidSpots+'</td></tr>'
+;
   const termsRows = terms.map((t,i) => '<tr><td class="n">'+(i+1)+'</td><td class="t">'+t+'</td></tr>').join("");
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>MPO ${mpoNo}</title>
@@ -690,7 +763,7 @@ export const buildMPOHTML = (mpo) => {
     </tr></thead>
     <tbody>${costBodyRows}</tbody>
     <tfoot>
-      <tr class="sum"><td colspan="4" style="text-align:right;font-weight:700;border-top:2px solid #888">Sub Total</td><td style="text-align:right;font-weight:700;border-top:2px solid #888">&#8358; ${fmt(subTotal)}</td></tr>
+      ${scheduleSummaryRows}<tr class="sum"><td colspan="4" style="text-align:right;font-weight:700;border-top:2px solid #888">Sub Total</td><td style="text-align:right;font-weight:700;border-top:2px solid #888">&#8358; ${fmt(subTotal)}</td></tr>
       ${vdRow}${cRow}${spRow}
       <tr class="sum"><td colspan="4" style="text-align:right;font-weight:700">VAT (${parseFloat(vatPct) || 7.5}%)</td><td style="text-align:right;font-weight:700">&#8358; ${fmt(vatAmt)}</td></tr>
       <tr class="payable"><td colspan="4" style="text-align:right;letter-spacing:.5px">Total Amount Payable &#8596;</td><td style="text-align:right;color:#1a3a6b;font-size:11px">&#8358; ${fmt(totalPayable)}</td></tr>

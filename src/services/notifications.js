@@ -112,6 +112,23 @@ export const fetchAuditEventsForAgency = async (agencyId, filter = "all", limit 
   return (data || []).map(mapAuditEventFromSupabase);
 };
 
+export const deleteAuditEventsOlderThanInSupabase = async (agencyId, olderThanIso) => {
+  if (!agencyId || !olderThanIso) return 0;
+  const { data, error } = await supabase
+    .from("audit_events")
+    .delete()
+    .eq("agency_id", agencyId)
+    .lt("created_at", olderThanIso)
+    .select("id");
+  if (error) {
+    if ((error.message || "").toLowerCase().includes("audit_events")) {
+      throw new Error('Missing table "audit_events". Run the provided SQL patch in Supabase SQL Editor.');
+    }
+    throw error;
+  }
+  return (data || []).length;
+};
+
 const mapNotificationFromSupabase = (row) => ({
   id: row.id,
   agencyId: row.agency_id,
@@ -146,6 +163,23 @@ export const fetchNotificationsFromSupabase = async (userId, agencyId, limit = 5
     throw error;
   }
   return (data || []).map(mapNotificationFromSupabase);
+};
+
+export const deleteNotificationsOlderThanInSupabase = async (agencyId, olderThanIso) => {
+  if (!agencyId || !olderThanIso) return 0;
+  const { data, error } = await supabase
+    .from("notifications")
+    .delete()
+    .eq("agency_id", agencyId)
+    .lt("created_at", olderThanIso)
+    .select("id");
+  if (error) {
+    if ((error.message || "").toLowerCase().includes("notifications")) {
+      throw new Error('Missing table "notifications". Run the provided SQL patch in Supabase SQL Editor.');
+    }
+    throw error;
+  }
+  return (data || []).length;
 };
 
 export const markNotificationReadInSupabase = async (notificationId) => {

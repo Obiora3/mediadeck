@@ -17,7 +17,12 @@ import { DEFAULT_SESSION_HOURS, DEFAULT_APP_SETTINGS } from "../constants/appDef
 import { persistSignatureForUser, updateProfileInSupabase } from "../services/users";
 import { updateAgencyInSupabase, updateAgencyMemberRoleInSupabase } from "../services/agencies";
 import { changePasswordInSupabase } from "../services/auth";
-import { createAuditEventInSupabase, fetchAuditEventsForAgency } from "../services/notifications";
+import {
+  createAuditEventInSupabase,
+  fetchAuditEventsForAgency,
+  deleteNotificationsOlderThanInSupabase,
+  deleteAuditEventsOlderThanInSupabase,
+} from "../services/notifications";
 
 const APP_VERSION = "2.3";
 const store = {
@@ -57,7 +62,7 @@ const downloadJSON = (filename, payload) => {
   URL.revokeObjectURL(url);
 };
 
-const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSettings, vendors, clients, campaigns, rates, mpos, receivables = [], members, setMembers, notifications, unreadNotifications, onMarkNotificationRead, onMarkAllNotificationsRead, initialSectionRequest = null }) => {
+const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSettings, vendors, clients, campaigns, rates, mpos, receivables = [], members, setMembers, notifications, setNotifications = () => {}, unreadNotifications, onMarkNotificationRead, onMarkAllNotificationsRead, initialSectionRequest = null }) => {
   const [toast, setToast] = useState(null);
   const backupInputRef = useRef(null);
   const [confirm, setConfirm] = useState(null);
@@ -71,6 +76,7 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityFilter, setActivityFilter] = useState("all");
   const [notificationFilter, setNotificationFilter] = useState("all");
+  const [cleanupBusy, setCleanupBusy] = useState("");
 
   // Profile form
   const [pf, setPf] = useState({ name: user.name || "", title: user.title || "", email: user.email || "", phone: user.phone || "", signatureDataUrl: user.signatureDataUrl || "" });
@@ -272,6 +278,72 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
       setToast({ msg: "Password changed successfully!", type: "success" });
     } catch (error) {
       setToast({ msg: error.message || "Failed to change password.", type: "error" });
+    }
+  };
+
+  const daysAgoIso = (days = 0) => {
+    const date = new Date();
+    date.setDate(date.getDate() - Math.max(0, Number(days) || 0));
+    return date.toISOString();
+  };
+
+  const purgeNotifications = async (days = 30) => {
+    if (!canDanger) return setToast({ msg: readOnlyMessage(user), type: "error" });
+    try {
+      setCleanupBusy(`notifications-${days}`);
+      const olderThanIso = daysAgoIso(days);
+      const deletedCount = await deleteNotificationsOlderThanInSupabase(user.agencyId, olderThanIso);
+      setNotifications((items) =>
+        (Array.isArray(items) ? items : []).filter((item) => {
+          const createdAt = item?.createdAt ? new Date(item.createdAt).getTime() : null;
+          return !createdAt || createdAt >= new Date(olderThanIso).getTime();
+        })
+      );
+      createAuditEventInSupabase({
+        agencyId: user.agencyId,
+        recordType: "workspace",
+        recordId: user.agencyId,
+        action: "notifications_purged",
+        actor: user,
+        note: `Removed ${deletedCount} notification${deletedCount !== 1 ? "s" : ""} older than ${days} days.`,
+        metadata: { deletedCount, retentionDays: days },
+      }).catch(error => console.error("Failed to write audit event:", error));
+      setToast({ msg: `Removed ${deletedCount} notification${deletedCount !== 1 ? "s" : ""} older than ${days} days.`, type: "success" });
+    } catch (error) {
+      setToast({ msg: error.message || "Failed to purge notifications.", type: "error" });
+    } finally {
+      setCleanupBusy("");
+    }
+  };
+
+  const purgeAuditEvents = async (days = 90) => {
+    if (!canDanger) return setToast({ msg: readOnlyMessage(user), type: "error" });
+    try {
+      setCleanupBusy(`audit-${days}`);
+      const olderThanIso = daysAgoIso(days);
+      const deletedCount = await deleteAuditEventsOlderThanInSupabase(user.agencyId, olderThanIso);
+      if (section === "activity") {
+        setActivityItems((items) =>
+          (Array.isArray(items) ? items : []).filter((item) => {
+            const createdAt = item?.createdAt ? new Date(item.createdAt).getTime() : null;
+            return !createdAt || createdAt >= new Date(olderThanIso).getTime();
+          })
+        );
+      }
+      createAuditEventInSupabase({
+        agencyId: user.agencyId,
+        recordType: "workspace",
+        recordId: user.agencyId,
+        action: "audit_events_purged",
+        actor: user,
+        note: `Removed ${deletedCount} audit event${deletedCount !== 1 ? "s" : ""} older than ${days} days.`,
+        metadata: { deletedCount, retentionDays: days },
+      }).catch(error => console.error("Failed to write audit event:", error));
+      setToast({ msg: `Removed ${deletedCount} audit event${deletedCount !== 1 ? "s" : ""} older than ${days} days.`, type: "success" });
+    } catch (error) {
+      setToast({ msg: error.message || "Failed to purge audit events.", type: "error" });
+    } finally {
+      setCleanupBusy("");
     }
   };
 
@@ -641,6 +713,33 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
                     <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, marginTop: 6 }}>{user?.signatureDataUrl ? "Available" : "Not saved"}</div>
                     <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4 }}>Used to keep the signatory visible between sessions.</div>
                   </div>
+                </div>
+              </Card>
+              <Card style={{ marginBottom: 14 }}>
+                <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Workspace Cleanup</h2>
+                <p style={{ color: "var(--text2)", fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>Delete low-risk historical Supabase records to keep this workspace responsive. These actions affect the whole agency workspace.</p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {[
+                    {
+                      label: "Purge Notifications Older Than 30 Days",
+                      desc: "Removes old workflow and workspace notifications across the agency.",
+                      busyKey: "notifications-30",
+                      confirmMsg: "Delete all notifications older than 30 days for this agency?",
+                      onYes: async () => { setConfirm(null); await purgeNotifications(30); },
+                    },
+                    {
+                      label: "Purge Audit Events Older Than 90 Days",
+                      desc: "Removes older workspace activity history while keeping recent actions.",
+                      busyKey: "audit-90",
+                      confirmMsg: "Delete all audit events older than 90 days for this agency?",
+                      onYes: async () => { setConfirm(null); await purgeAuditEvents(90); },
+                    },
+                  ].map(({ label, desc, busyKey, confirmMsg, onYes }) => (
+                    <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
+                      <div><div style={{ fontSize: 13, fontWeight: 600 }}>{label}</div><div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>{desc}</div></div>
+                      {canDanger && <Btn variant="danger" size="sm" loading={cleanupBusy === busyKey} onClick={() => setConfirm({ msg: confirmMsg, onYes })}>Run Cleanup</Btn>}
+                    </div>
+                  ))}
                 </div>
               </Card>
               <Card style={{ border: "1px solid rgba(239,68,68,.25)", background: "rgba(239,68,68,.04)" }}>

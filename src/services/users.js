@@ -12,7 +12,7 @@ export const loadAppUserFromSupabase = async (authUser) => {
   try {
     const { data, error } = await supabase
       .from("profiles")
-      .select("*")
+      .select("id, agency_id, email, full_name, title, phone, role")
       .eq("id", authUser.id)
       .maybeSingle();
     if (!error) profile = data || null;
@@ -65,6 +65,31 @@ export const loadAppUserFromSupabase = async (authUser) => {
     role: resolvedRole,
     roleLabel: formatRoleLabel(resolvedRole),
     profileMissing: !profile,
+  };
+};
+
+export const buildFallbackAppUser = (authUser, agencyId = null) => {
+  if (!authUser) return null;
+  const storedSignature = getStoredUserSignature(authUser.id);
+  const storedAgencyContact = getStoredAgencyContact(agencyId);
+  const resolvedRole = normalizeRole(authUser.user_metadata?.role || "viewer");
+
+  return {
+    id: authUser.id,
+    name: authUser.user_metadata?.full_name || authUser.email || "User",
+    email: authUser.email || "",
+    title: authUser.user_metadata?.title || "",
+    phone: authUser.user_metadata?.phone || "",
+    agency: authUser.user_metadata?.agency_name || "My Agency",
+    agencyId: agencyId || authUser.user_metadata?.agency_id || null,
+    agencyCode: authUser.user_metadata?.agency_code || "",
+    agencyAddress: "",
+    agencyEmail: authUser.user_metadata?.agency_email || storedAgencyContact.email || "",
+    agencyPhone: authUser.user_metadata?.agency_phone || storedAgencyContact.phone || "",
+    signatureDataUrl: authUser.user_metadata?.signature_data_url || storedSignature || "",
+    role: resolvedRole,
+    roleLabel: formatRoleLabel(resolvedRole),
+    profileMissing: true,
   };
 };
 
