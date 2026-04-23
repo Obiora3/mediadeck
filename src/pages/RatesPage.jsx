@@ -297,6 +297,7 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
   const [importModal, setImportModal] = useState(false);
   const [search, setSearch]       = useState("");
   const [filterV, setFilterV]     = useState("");
+  const [filterChannelType, setFilterChannelType] = useState("");
   const [viewMode, setViewMode]   = useState("active");
   const [toast, setToast]         = useState(null);
   const [confirm, setConfirm]     = useState(null);
@@ -478,9 +479,16 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
   };
 
   const visibleRates = viewMode === "archived" ? archivedOnly(rates) : viewMode === "all" ? rates : activeOnly(rates);
+  const channelTypeOptions = Array.from(
+    new Set((visibleRates || []).map(rate => String(rate.mediaType || "").trim()).filter(Boolean))
+  )
+    .sort((a, b) => a.localeCompare(b))
+    .map(mediaType => ({ value: mediaType, label: mediaType }));
   const filtered = visibleRates.filter(r => {
     const vn = vendors.find(v => v.id === r.vendorId)?.name || "";
-    return `${vn} ${r.programme || ""}`.toLowerCase().includes(search.toLowerCase()) && (!filterV || r.vendorId === filterV);
+    return `${vn} ${r.programme || ""}`.toLowerCase().includes(search.toLowerCase())
+      && (!filterV || r.vendorId === filterV)
+      && (!filterChannelType || String(r.mediaType || "") === filterChannelType);
   });
 
   const inputSt = { background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 7, padding: "7px 10px", color: "var(--text)", fontSize: 12, outline: "none", width: "100%" };
@@ -501,6 +509,7 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
       <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 180 }}><Field value={search} onChange={setSearch} placeholder="Search by vendor or programme…" /></div>
         <Field value={filterV} onChange={setFilterV} options={activeOnly(vendors).map(v => ({ value: v.id, label: v.name }))} placeholder="All Vendors" />
+        <Field value={filterChannelType} onChange={setFilterChannelType} options={channelTypeOptions} placeholder="All Channel Types" />
         <Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />
       </div>
 
