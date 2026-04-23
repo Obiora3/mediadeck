@@ -2781,6 +2781,8 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
+  const [vendorFilter, setVendorFilter] = useState("all");
+  const [clientFilter, setClientFilter] = useState("all");
   const [selectedMpoIds, setSelectedMpoIds] = useState([]);
   const [deleteProgress, setDeleteProgress] = useState(null);
   const workflowPanelStorageKey = `msp_mpo_workflow_panel_${user?.id || "guest"}`;
@@ -3718,9 +3720,13 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     const q = `${m.mpoNo || ""} ${m.vendorName || ""} ${m.clientName || ""} ${m.brand || ""} ${m.campaignName || ""}`.toLowerCase();
     return q.includes(searchTerm.toLowerCase())
       && (statusFilter === "all" || (m.status || "draft") === statusFilter)
-      && (campaignFilter === "all" || String(m.campaignId || "") === campaignFilter);
+      && (campaignFilter === "all" || String(m.campaignId || "") === campaignFilter)
+      && (vendorFilter === "all" || String(m.vendorId || "") === vendorFilter)
+      && (clientFilter === "all" || String(m.clientId || "") === clientFilter);
   });
   const campaignFilterOptions = [{ value: "all", label: "All Campaigns" }, ...campaigns.map(c => ({ value: c.id, label: c.name }))];
+  const vendorFilterOptions = [{ value: "all", label: "All Vendors" }, ...vendors.map(v => ({ value: v.id, label: v.name }))];
+  const clientFilterOptions = [{ value: "all", label: "All Clients" }, ...clients.map(c => ({ value: c.id, label: c.name }))];
   const selectedVisibleMpoIds = selectedMpoIds.filter(id => visibleMpos.some(m => m.id === id));
   const hasSelectedMpos = selectedVisibleMpoIds.length > 0;
   const allVisibleSelected = visibleMpos.length > 0 && selectedVisibleMpoIds.length === visibleMpos.length;
@@ -3995,6 +4001,8 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <Field value={searchTerm} onChange={setSearchTerm} placeholder="Search MPO, vendor, client..." />
             <Field value={campaignFilter} onChange={setCampaignFilter} options={campaignFilterOptions} />
+            <Field value={vendorFilter} onChange={setVendorFilter} options={vendorFilterOptions} />
+            <Field value={clientFilter} onChange={setClientFilter} options={clientFilterOptions} />
             <Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} />
             <Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />
             {canManage && <><Btn variant="ghost" onClick={() => setMediaPlanImportOpen(true)}>Import Media Plan</Btn><Btn icon="+" onClick={openNew}>New MPO</Btn></>}
