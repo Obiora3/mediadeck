@@ -514,10 +514,10 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
       </div>
 
       {filtered.length === 0 ? <Card><Empty icon="💰" title="No rate cards" sub="Add media rates to use in MPO generation" /></Card> :
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 260px)", borderRadius: 12, border: "1px solid var(--border)" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 800 }}>
             <thead><tr style={{ background: "var(--bg3)" }}>
-              {["Vendor","Programme","Time Belt","Type","Dur","Rate/Spot","Disc%","Comm%","Net Rate",""].map(h => <th key={h} style={{ padding: "7px 9px", textAlign: "left", fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}
+              {["Vendor","Programme","Time Belt","Type","Dur","Rate/Spot","Disc%","Comm%","Net Rate",""].map(h => <th key={h} style={{ position: "sticky", top: 0, zIndex: 5, background: "var(--bg3)", padding: "7px 9px", textAlign: "left", fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text3)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {filtered.map((r, i) => {
