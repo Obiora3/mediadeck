@@ -457,6 +457,18 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
     outline: "none",
     width: "100%",
   };
+  const formatCount = (value) => Number(value || 0).toLocaleString("en-NG");
+  const countSummaryLabels = new Set([
+    "Pending Approvals",
+  ]);
+  const sectionCountColumns = {
+    "spend-vendor": new Set([2, 3]),
+    "spend-client": new Set([1, 2]),
+    "campaign-budget": new Set([10]),
+    "reconciliation": new Set([3, 4, 5, 6]),
+    "status-pipeline": new Set([1]),
+    "mpo-register": new Set([10]),
+  };
 
   return (
     <div className="fade">
@@ -514,7 +526,9 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14, marginBottom: 24 }}>
         {summaryCards.map(card => {
-          const displayValue = typeof card.value === "number" ? fmtN(card.value) : card.value;
+          const displayValue = typeof card.value === "number"
+            ? (countSummaryLabels.has(card.label) ? formatCount(card.value) : fmtN(card.value))
+            : card.value;
           return (
             <Card key={card.label} hoverable style={{ position: "relative", overflow: "hidden", padding: 18, minHeight: 148, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
               <div style={{ position: "absolute", top: -14, right: -10, fontSize: 64, opacity: .05 }}>{card.icon}</div>
@@ -584,7 +598,10 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
                           onMouseLeave={e => e.currentTarget.style.background = rowIndex % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)"}
                         >
                           {row.map((cell, cellIndex) => {
-                            const display = typeof cell === "number" && Math.abs(cell) >= 1000 ? fmtN(cell) : cell;
+                            const isCountColumn = sectionCountColumns[section.id]?.has(cellIndex);
+                            const display = typeof cell === "number"
+                              ? (isCountColumn ? formatCount(cell) : (Math.abs(cell) >= 1000 ? fmtN(cell) : cell))
+                              : cell;
                             return (
                               <td key={cellIndex} style={{ padding: "8px 10px", fontSize: 12, color: cellIndex === 0 ? "var(--text)" : "var(--text2)", fontWeight: cellIndex === 0 ? 600 : 400, whiteSpace: cellIndex < 2 ? "nowrap" : "normal" }}>
                                 {display}
