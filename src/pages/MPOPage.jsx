@@ -3716,13 +3716,18 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   };
 
   const statusColors = MPO_STATUS_COLORS;
+  const getMpoClientId = (mpo) => {
+    if (mpo?.clientId) return String(mpo.clientId);
+    const campaignForMpo = campaigns.find((campaignItem) => String(campaignItem.id || "") === String(mpo?.campaignId || ""));
+    return String(campaignForMpo?.clientId || "");
+  };
   const visibleMpos = (viewMode === "archived" ? archivedOnly(mpos) : viewMode === "all" ? mpos : activeOnly(mpos)).filter(m => {
     const q = `${m.mpoNo || ""} ${m.vendorName || ""} ${m.clientName || ""} ${m.brand || ""} ${m.campaignName || ""}`.toLowerCase();
     return q.includes(searchTerm.toLowerCase())
       && (statusFilter === "all" || (m.status || "draft") === statusFilter)
       && (campaignFilter === "all" || String(m.campaignId || "") === campaignFilter)
       && (vendorFilter === "all" || String(m.vendorId || "") === vendorFilter)
-      && (clientFilter === "all" || String(m.clientId || "") === clientFilter);
+      && (clientFilter === "all" || getMpoClientId(m) === clientFilter);
   });
   const campaignFilterOptions = [{ value: "all", label: "All Campaigns" }, ...campaigns.map(c => ({ value: c.id, label: c.name }))];
   const vendorFilterOptions = [{ value: "all", label: "All Vendors" }, ...vendors.map(v => ({ value: v.id, label: v.name }))];
