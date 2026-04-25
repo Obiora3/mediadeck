@@ -80,11 +80,13 @@ export const buildProgrammeCostLines = (spots = []) => {
   const grouped = new Map();
   (spots || []).forEach(spot => {
     const programme = String(spot?.programme || '').trim() || 'Untitled Programme';
+    const timeBelt = String(spot?.timeBelt || '').trim();
     const duration = String(spot?.duration || '').trim() || '';
     const rate = parseFloat(spot?.ratePerSpot) || 0;
     const cnt = getSpotPaidCount(spot);
-    const key = `${programme.toLowerCase()}|${duration}`;
-    if (!grouped.has(key)) grouped.set(key, { programme, duration, cnt: 0, rate });
+    const label = timeBelt || programme;
+    const key = `${(timeBelt || programme).toLowerCase()}|${duration}|${rate}`;
+    if (!grouped.has(key)) grouped.set(key, { programme: label, duration, cnt: 0, rate });
     const entry = grouped.get(key);
     entry.cnt += cnt;
     if (!entry.rate && rate) entry.rate = rate;
@@ -168,8 +170,7 @@ export const buildMPOPdf = (mpo) => {
   const dNums = Array.from({length:dim},(_,i)=>i+1);
 
   /* costing */
-  const costLines = sWD.map(s=>({ programme:s.programme||'', material:s.material||'', duration:s.duration||'', cnt:getSpotPaidCount(s), rate:parseFloat(s.ratePerSpot)||0 }));
-  costLines.forEach(l=>l.gross=l.cnt*l.rate);
+  const costLines = buildProgrammeCostLines(sWD);
   const subTotal  = costLines.reduce((a,l)=>a+l.gross,0);
   const vdPct     = parseFloat(mpo.discPct)||0;
   const vdAmt     = subTotal*vdPct;
@@ -755,7 +756,7 @@ export const buildMPOHTML = (mpo) => {
   <div class="costing-title">C &nbsp; O &nbsp; S &nbsp; T &nbsp; I &nbsp; N &nbsp; G</div>
   <table class="cost">
     <thead><tr>
-      <th style="text-align:left;min-width:150px">PROGRAMME</th>
+      <th style="text-align:left;min-width:150px">PROGRAMME TIMBELT</th>
       <th style="text-align:center;min-width:55px">DURATION</th>
       <th style="text-align:center;min-width:60px">NO OF SPOTS</th>
       <th style="text-align:right;min-width:90px">RATE/SPOT (&#8358;)</th>

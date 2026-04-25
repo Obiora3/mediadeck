@@ -206,14 +206,15 @@ const InlineDailyCalendar = ({ month, year, calRows = [], setCalRows, vendorRate
       (rows || []).map((row) => {
         if (row.id !== rowId) return row;
         const next = typeof updater === "function" ? updater(row) : { ...row, ...updater };
-        const nextTotal = dayTotal(next.dayCounts || {});
-        const nextBonus = next.isComplimentary
+        const autoMatched = applyAutoMatchedVendorRate(next, vendorRates || []);
+        const nextTotal = dayTotal(autoMatched.dayCounts || {});
+        const nextBonus = autoMatched.isComplimentary
           ? nextTotal
-          : Math.max(0, Math.min(Number(next.bonusSpots) || 0, nextTotal));
+          : Math.max(0, Math.min(Number(autoMatched.bonusSpots) || 0, nextTotal));
         return {
-          ...next,
+          ...autoMatched,
           bonusSpots: nextTotal > 0 ? String(nextBonus) : "",
-          customRate: next.isComplimentary ? "" : next.customRate,
+          customRate: autoMatched.isComplimentary ? "" : autoMatched.customRate,
         };
       })
     );
@@ -1966,34 +1967,94 @@ const parseCompositeMediaPlanRows = (sheetRows = [], vendors = [], sourceSheet =
 };
 
 const normalizeProgrammeForMatch = (value = "") => normalizeMediaPlanVendorName(value).replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+const normalizeTimeBeltForMatch = (value = "") =>
+  String(planText(value) || "")
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s*-\s*/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+const applyAutoMatchedVendorRate = (row = {}, vendorRates = []) => {
+  if (!row) return row;
+  if (row.isComplimentary) return { ...row, rateId: "", customRate: "" };
+  if (String(row.customRate ?? "").trim()) return row;
+  const matchedRate = findMatchingVendorRateForImportRow(row, vendorRates);
+  if (!matchedRate) return { ...row, rateId: "" };
+  return {
+    ...row,
+    rateId: matchedRate.id || "",
+    timeBelt: row.timeBelt || matchedRate.timeBelt || "",
+    duration: row.duration || (matchedRate.duration ? String(matchedRate.duration) : row.duration) || "30",
+  };
+};
 const findMatchingVendorRateForImportRow = (row = {}, vendorRates = []) => {
   const targetProgramme = normalizeProgrammeForMatch(row?.programme || "");
-  const targetTime = planText(row?.timeBelt || "").toLowerCase();
+  const targetTime = normalizeTimeBeltForMatch(row?.timeBelt || "");
   const targetDuration = String(row?.duration || "").trim();
-  if (!targetProgramme) return null;
+  if (!targetProgramme && !targetTime) return null;
+
+  const exactTimeCandidates = (vendorRates || []).map((rate) => {
+    const rateTime = normalizeTimeBeltForMatch(rate?.timeBelt || "");
+    const rateDuration = String(rate?.duration || "").trim();
+    const rateProgramme = normalizeProgrammeForMatch(rate?.programme || "");
+    const exactTime = !!targetTime && !!rateTime && rateTime === targetTime;
+    const exactProgramme = !!targetProgramme && !!rateProgramme && rateProgramme === targetProgramme;
+    return { rate, exactTime, exactProgramme, rateTime, rateDuration };
+  }).filter((item) => item.exactTime);
+
+  if (exactTimeCandidates.length === 1) return exactTimeCandidates[0].rate || null;
+  if (exactTimeCandidates.length > 1) {
+    const exactDurationTimeMatches = exactTimeCandidates.filter(item => targetDuration && item.rateDuration && item.rateDuration === targetDuration);
+    if (exactDurationTimeMatches.length === 1) return exactDurationTimeMatches[0].rate || null;
+
+    const distinctRates = [...new Set(exactTimeCandidates.map(item => Number(item?.rate?.ratePerSpot) || 0))];
+    if (distinctRates.length === 1) return exactTimeCandidates[0].rate || null;
+
+    const exactProgrammeTimeMatches = exactTimeCandidates.filter(item => item.exactProgramme);
+    if (exactProgrammeTimeMatches.length === 1) return exactProgrammeTimeMatches[0].rate || null;
+
+    return exactTimeCandidates[0]?.rate || null;
+  }
 
   const candidates = (vendorRates || []).map((rate) => {
     const rateProgramme = normalizeProgrammeForMatch(rate?.programme || "");
-    const rateTime = planText(rate?.timeBelt || "").toLowerCase();
+    const rateTime = normalizeTimeBeltForMatch(rate?.timeBelt || "");
     const rateDuration = String(rate?.duration || "").trim();
     const exactProgramme = !!rateProgramme && rateProgramme === targetProgramme;
     const fuzzyProgramme = !!rateProgramme && !exactProgramme && (rateProgramme.includes(targetProgramme) || targetProgramme.includes(rateProgramme));
+    const exactTime = !!targetTime && !!rateTime && rateTime === targetTime;
     let score = 0;
+    if (exactTime) score += 120;
     if (exactProgramme) score += 100;
     else if (fuzzyProgramme) score += 60;
     if (targetDuration && rateDuration && targetDuration === rateDuration) score += 10;
-    if (targetTime && rateTime && targetTime === rateTime) score += 5;
-    return { rate, score, exactProgramme, fuzzyProgramme, rateProgramme, rateTime, rateDuration };
+    return { rate, score, exactProgramme, fuzzyProgramme, exactTime, rateProgramme, rateTime, rateDuration };
   }).filter(item => item.exactProgramme || item.fuzzyProgramme);
 
   if (!candidates.length) return null;
+
+  if (targetTime) {
+    const exactTimeMatches = candidates.filter(item => item.exactTime);
+    if (exactTimeMatches.length === 1) return exactTimeMatches[0].rate || null;
+    if (exactTimeMatches.length > 1) {
+      const exactProgrammeTimeMatches = exactTimeMatches.filter(item => item.exactProgramme);
+      if (exactProgrammeTimeMatches.length === 1) return exactProgrammeTimeMatches[0].rate || null;
+      const exactDurationTimeMatches = exactTimeMatches.filter(item => targetDuration && item.rateDuration && item.rateDuration === targetDuration);
+      if (exactDurationTimeMatches.length === 1) return exactDurationTimeMatches[0].rate || null;
+      const sortedTimeMatches = [...exactTimeMatches].sort((a, b) => b.score - a.score);
+      if (sortedTimeMatches.length && (sortedTimeMatches.length === 1 || sortedTimeMatches[0].score > sortedTimeMatches[1].score)) {
+        return sortedTimeMatches[0].rate || null;
+      }
+      return sortedTimeMatches[0]?.rate || null;
+    }
+  }
 
   const exactProgrammeMatches = candidates.filter(item => item.exactProgramme);
   if (exactProgrammeMatches.length === 1) return exactProgrammeMatches[0].rate || null;
   if (exactProgrammeMatches.length > 1) {
     const exactDurationMatches = exactProgrammeMatches.filter(item => targetDuration && item.rateDuration && item.rateDuration === targetDuration);
     if (exactDurationMatches.length === 1) return exactDurationMatches[0].rate || null;
-    const exactTimeMatches = exactProgrammeMatches.filter(item => targetTime && item.rateTime && item.rateTime === targetTime);
+    const exactTimeMatches = exactProgrammeMatches.filter(item => item.exactTime);
     if (exactTimeMatches.length === 1) return exactTimeMatches[0].rate || null;
     const sortedExact = [...exactProgrammeMatches].sort((a, b) => b.score - a.score);
     if (sortedExact.length && (sortedExact.length === 1 || sortedExact[0].score > sortedExact[1].score)) return sortedExact[0].rate || null;
@@ -2882,12 +2943,12 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const [savedDrafts, setSavedDrafts] = useState(() => migrateLegacyDraftIfNeeded());
   const [activeDraftId, setActiveDraftId] = useState(null);
   const upd = k => v => setMpoData(m => ({ ...m, [k]: v }));
-  const updS = k => v => setSpotForm(f => ({ ...f, [k]: v }));
   const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const campaign = campaigns.find(c => c.id === mpoData.campaignId);
   const client = clients.find(c => c.id === campaign?.clientId);
   const vendor = vendors.find(v => v.id === mpoData.vendorId);
   const vendorRates = activeOnly(rates).filter(r => r.vendorId === mpoData.vendorId);
+  const updS = k => v => setSpotForm(f => applyAutoMatchedVendorRate({ ...f, [k]: v }, vendorRates));
   const extractMonthNameFromScheduleLabel = (value = "") => {
     const raw = String(value || "").trim();
     if (!raw) return "";
@@ -2981,7 +3042,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       if (row.id !== rowId) return row;
       const totalScheduledSpots = totalCountFromDayCounts(row?.dayCounts || {});
       const nextPatch = typeof patch === "function" ? patch(row, totalScheduledSpots) : patch;
-      const merged = { ...row, ...nextPatch };
+      const merged = applyAutoMatchedVendorRate({ ...row, ...nextPatch }, vendorRates);
       const nextTotal = totalCountFromDayCounts(merged?.dayCounts || {});
       const normalizedBonus = merged.isComplimentary
         ? nextTotal

@@ -3,6 +3,7 @@ export const buildProgrammeCostLines = (spots = []) => {
 
   (spots || []).forEach((spot) => {
     const programme = String(spot?.programme || '').trim() || 'Untitled Programme';
+    const timeBelt = String(spot?.timeBelt || '').trim();
     const duration = String(spot?.duration || '').trim() || '';
     const rate = parseFloat(spot?.ratePerSpot) || 0;
     const cnt = Array.isArray(spot?.ad) && spot.ad.length
@@ -11,8 +12,9 @@ export const buildProgrammeCostLines = (spots = []) => {
         ? spot.calendarDays.length
         : (parseFloat(spot?.spots) || 0);
 
-    const key = programme.toLowerCase();
-    if (!grouped.has(key)) grouped.set(key, { programme, duration, cnt: 0, rate });
+    const label = timeBelt || programme;
+    const key = `${(timeBelt || programme).toLowerCase()}|${duration}|${rate}`;
+    if (!grouped.has(key)) grouped.set(key, { programme: label, duration, cnt: 0, rate });
 
     const entry = grouped.get(key);
     entry.cnt += cnt;
