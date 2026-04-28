@@ -57,7 +57,16 @@ export function usePwaInstall() {
       deferredPrompt.current = null;
       setCanInstall(false);
       setShowBanner(false);
-      if (outcome !== "accepted") {
+      if (outcome === "accepted") {
+        // Request notification permission so the app can send alerts
+        if ("Notification" in window && Notification.permission === "default") {
+          await Notification.requestPermission();
+        }
+        // Request persistent storage so the OS won't evict the app's cached data
+        if (navigator.storage?.persist) {
+          await navigator.storage.persist();
+        }
+      } else {
         try { localStorage.setItem(SNOOZE_KEY, String(Date.now())); } catch {}
       }
     } catch {

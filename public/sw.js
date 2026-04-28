@@ -24,7 +24,13 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))
       )
-      .then(() => self.clients.claim())
+      .then(async () => {
+        // Request persistent storage so the browser won't evict cached assets
+        if (navigator.storage?.persist) {
+          await navigator.storage.persist();
+        }
+        return self.clients.claim();
+      })
   );
 });
 
@@ -62,5 +68,25 @@ self.addEventListener("fetch", (event) => {
 
       return cached || fetched;
     })
+  );
+});
+
+// Open the app (or focus the existing window) when a notification is clicked
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = event.notification.data?.url || "/";
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clients) => {
+        const existing = clients.find((c) => c.url.startsWith(self.location.origin));
+        if (existing) {
+          existing.focus();
+          existing.navigate(target);
+        } else {
+          self.clients.openWindow(target);
+        }
+      })
   );
 });

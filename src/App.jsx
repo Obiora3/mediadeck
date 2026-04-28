@@ -193,7 +193,11 @@ export default function App() {
 
   const [user, setUser] = useState(null);
   const [authUser, setAuthUser] = useState(null);
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState(() => {
+    const p = new URLSearchParams(window.location.search).get("page");
+    const valid = ["dashboard","vendors","clients","campaigns","rates","finance","mpo","reports","settings"];
+    return valid.includes(p) ? p : "dashboard";
+  });
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useState(() => getDefaultTheme());
   const [appSettings, _setAppSettings] = useState(() => getAppSettings());
