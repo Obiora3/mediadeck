@@ -686,7 +686,8 @@ export const buildMPOHTML = (mpo) => {
       body{padding:0}
       .cal-wrap{overflow:visible;break-inside:auto;page-break-inside:auto}
       .cal{width:100%;table-layout:fixed}
-      .cal thead,.cost thead{display:table-header-group}
+      .cal thead{display:table-header-group}
+      .cost thead{display:table-row-group}
       .cal tr,.cost tr,.terms tr{break-inside:avoid;page-break-inside:avoid}
       .cal th,.cal td{min-width:0!important;width:auto!important;padding:1px 1px!important;font-size:5.5px!important;white-space:normal!important;line-height:1.15}
       .cal th[colspan]{letter-spacing:2px!important}
