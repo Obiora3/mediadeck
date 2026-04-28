@@ -15,7 +15,7 @@ const Sidebar = ({ page, setPage, user, onLogout, collapsed, setCollapsed, theme
   ];
   return (
     <div style={{ width: collapsed ? 64 : 230, minHeight: "100vh", background: "var(--bg2)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", transition: "width .22s ease", overflow: "hidden", flexShrink: 0, position: "sticky", top: 0, height: "100vh" }}>
-      <div style={{ padding: collapsed ? "18px 14px" : "18px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 11, minHeight: 68 }}>
+      <div style={{ padding: collapsed ? "18px 14px" : "18px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 11, minHeight: 68, WebkitAppRegion: "drag", appRegion: "drag" }}>
         <div style={{ width: 34, height: 34, background: "var(--accent)", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>📡</div>
         {!collapsed && <div><div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 15 }}>MediaDesk</div><div style={{ fontSize: 9, color: "var(--text3)" }}>PRO PLATFORM · {formatRoleLabel(user?.role)}</div></div>}
       </div>

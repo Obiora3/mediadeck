@@ -924,7 +924,7 @@ if (!user) {
       <GlobalStyle theme={theme} />
       <div style={{ display: "flex", minHeight: "100vh", width: "100%", maxWidth: "100%", overflowX: "hidden" }}>
         <Sidebar page={page} setPage={setPage} user={user} onLogout={handleLogout} collapsed={collapsed} setCollapsed={setCollapsed} theme={theme} toggleTheme={toggleTheme} unreadNotifications={unreadNotifications} canInstall={canInstall} onInstall={install} />
-        <main style={{ flex: 1, minWidth: 0, width: "100%", overflowY: "auto", overflowX: "hidden", padding: "28px 28px 52px", position: "relative", boxSizing: "border-box" }}>
+        <main style={{ flex: 1, minWidth: 0, width: "100%", overflowY: "auto", overflowX: "hidden", paddingTop: "calc(env(titlebar-area-height, 0px) + 28px)", paddingRight: 28, paddingBottom: 52, paddingLeft: 28, position: "relative", boxSizing: "border-box" }}>
           <TopRightNotificationsButton count={unreadNotifications} onClick={() => setAlertsOpen(true)} />
           {alertsOpen && (
             <Modal title="Workspace Alerts" onClose={() => setAlertsOpen(false)} width={560}>
