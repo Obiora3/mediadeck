@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "MediaDeck",
+  "short_name": "MediaDeck",
+  "description": "Media workspace for campaigns, media rates, MPOs, finance, and reporting.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07090f",
+  "theme_color": "#f0a500",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["business", "productivity", "finance"]
+}

@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePwaInstall } from "./hooks/usePwaInstall";
 import { supabase } from "./lib/supabase";
 import Badge from "./components/Badge";
 import Empty from "./components/Empty";
 import Toast from "./components/Toast";
 import Modal from "./components/Modal";
 import Confirm from "./components/Confirm";
+import PwaInstallPrompt from "./components/PwaInstallPrompt";
 import { GlobalStyle, Btn, Field, AttachmentField, Card, Stat } from "./components/ui/primitives";
 import AuthPage from "./components/auth/AuthPage";
 import Sidebar from "./components/layout/Sidebar";
@@ -284,6 +286,7 @@ export default function App() {
 // MPOs now come from Supabase
 
   const [authReady, setAuthReady] = useState(false);
+  const { canInstall, showBanner, isInstalling, install, dismissBanner } = usePwaInstall();
   const mpoBulkImportRef = useRef(false);
   const refreshMposRef = useRef(async () => {});
   const mpoRefreshTimerRef = useRef(null);
@@ -905,6 +908,7 @@ if (!user) {
     <>
       <GlobalStyle theme={theme} />
       <AuthPage />
+      <PwaInstallPrompt show={showBanner} onInstall={install} onDismiss={dismissBanner} isInstalling={isInstalling} />
     </>
   );
 }
@@ -915,7 +919,7 @@ if (!user) {
     <>
       <GlobalStyle theme={theme} />
       <div style={{ display: "flex", minHeight: "100vh", width: "100%", maxWidth: "100%", overflowX: "hidden" }}>
-        <Sidebar page={page} setPage={setPage} user={user} onLogout={handleLogout} collapsed={collapsed} setCollapsed={setCollapsed} theme={theme} toggleTheme={toggleTheme} unreadNotifications={unreadNotifications} />
+        <Sidebar page={page} setPage={setPage} user={user} onLogout={handleLogout} collapsed={collapsed} setCollapsed={setCollapsed} theme={theme} toggleTheme={toggleTheme} unreadNotifications={unreadNotifications} canInstall={canInstall} onInstall={install} />
         <main style={{ flex: 1, minWidth: 0, width: "100%", overflowY: "auto", overflowX: "hidden", padding: "28px 28px 52px", position: "relative", boxSizing: "border-box" }}>
           <TopRightNotificationsButton count={unreadNotifications} onClick={() => setAlertsOpen(true)} />
           {alertsOpen && (
@@ -952,6 +956,7 @@ if (!user) {
           {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} setNotifications={setNotifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} initialSectionRequest={settingsOpenSection} />}
         </main>
       </div>
+      <PwaInstallPrompt show={showBanner} onInstall={install} onDismiss={dismissBanner} isInstalling={isInstalling} />
     </>
   );
 }

@@ -1,7 +1,7 @@
 import { formatRoleLabel } from "../../constants/roles";
 
 /* ── SIDEBAR ────────────────────────────────────────────── */
-const Sidebar = ({ page, setPage, user, onLogout, collapsed, setCollapsed, theme, toggleTheme, unreadNotifications = 0 }) => {
+const Sidebar = ({ page, setPage, user, onLogout, collapsed, setCollapsed, theme, toggleTheme, unreadNotifications = 0, canInstall = false, onInstall }) => {
   const nav = [
     { id: "dashboard", icon: "◈", label: "Dashboard" },
     { id: "vendors",   icon: "🏢", label: "Vendors" },
@@ -34,6 +34,14 @@ const Sidebar = ({ page, setPage, user, onLogout, collapsed, setCollapsed, theme
         })}
       </nav>
 
+      {canInstall && (
+        <button onClick={onInstall}
+          title="Install MediaDeck app"
+          style={{ margin: "4px 6px 2px", padding: "7px", background: "rgba(240,165,0,.08)", border: "1px solid rgba(240,165,0,.25)", borderRadius: 7, color: "var(--accent)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "flex-start", gap: 8, width: "calc(100% - 12px)" }}>
+          ⬇
+          {!collapsed && <span style={{ fontSize: 11, fontWeight: 600 }}>Install App</span>}
+        </button>
+      )}
       <button onClick={() => toggleTheme && toggleTheme()}
         title={theme === "light" ? "Switch to Dark Mode" : "Switch to Light Mode"}
         style={{ margin: "4px 6px 2px", padding: "7px", background: theme === "dark" ? "rgba(240,165,0,.12)" : "rgba(59,126,245,.1)", border: `1px solid ${theme === "dark" ? "rgba(240,165,0,.3)" : "rgba(59,126,245,.25)"}`, borderRadius: 7, color: theme === "dark" ? "var(--accent)" : "var(--blue)", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "flex-start", gap: 8, width: "calc(100% - 12px)" }}>
