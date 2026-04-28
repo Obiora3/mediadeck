@@ -172,7 +172,7 @@ export default async function handler(req, res) {
       request.abort();
     });
 
-    await page.emulateMediaType("screen");
+    await page.emulateMediaType("print");
 
     await page.setContent(html, {
       waitUntil: "domcontentloaded",
@@ -189,49 +189,16 @@ export default async function handler(req, res) {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
-    const dimensions = await page.evaluate(() => {
-      const body = document.body;
-      const root = document.documentElement;
-
-      return {
-        width: Math.ceil(
-          Math.max(
-            body.scrollWidth,
-            body.offsetWidth,
-            body.clientWidth,
-            root.scrollWidth,
-            root.offsetWidth,
-            root.clientWidth
-          )
-        ),
-        height: Math.ceil(
-          Math.max(
-            body.scrollHeight,
-            body.offsetHeight,
-            body.clientHeight,
-            root.scrollHeight,
-            root.offsetHeight,
-            root.clientHeight
-          )
-        ),
-      };
-    });
-
-    const pdfWidth = Math.max(900, dimensions.width);
-    const pdfHeight = Math.max(1200, dimensions.height + 24);
-
     const pdfBuffer = await page.pdf({
       printBackground: true,
-      width: `${pdfWidth}px`,
-      height: `${pdfHeight}px`,
+      format: "A4",
       margin: {
         top: "0px",
         right: "0px",
         bottom: "0px",
         left: "0px",
       },
-      preferCSSPageSize: false,
-      pageRanges: "1",
+      preferCSSPageSize: true,
     });
 
     pdfCache.set(cacheKey, {

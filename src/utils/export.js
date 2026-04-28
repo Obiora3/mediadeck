@@ -681,7 +681,17 @@ export const buildMPOHTML = (mpo) => {
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:Arial,Helvetica,sans-serif;font-size:9px;color:#111;background:#fff;padding:8mm 10mm}
-    @media print{body{padding:5mm 7mm}@page{size:A4;margin:15mm}}
+    @media print{
+      @page{size:A4;margin:12mm}
+      body{padding:0}
+      .cal-wrap{overflow:visible;break-inside:auto;page-break-inside:auto}
+      .cal{width:100%;table-layout:fixed}
+      .cal thead,.cost thead{display:table-header-group}
+      .cal tr,.cost tr,.terms tr{break-inside:avoid;page-break-inside:avoid}
+      .cal th,.cal td{min-width:0!important;width:auto!important;padding:1px 1px!important;font-size:5.5px!important;white-space:normal!important;line-height:1.15}
+      .cal th[colspan]{letter-spacing:2px!important}
+      .sig{break-inside:avoid;page-break-inside:avoid}
+    }
     .logo-wrap{text-align:center;margin:0;padding:0;line-height:1;border:none;background:none}
     .logo-wrap img{max-height:60px;max-width:120px;object-fit:contain;display:block;border:none;outline:none;margin:0 auto;padding:0;background:transparent}
     .agency-addr{text-align:center;font-size:7.5px;color:#7b0000;font-weight:700;text-transform:uppercase;margin:0;padding:0;letter-spacing:.3px;white-space:nowrap;line-height:1.2}

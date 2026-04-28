@@ -4071,7 +4071,17 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
             <Field value={clientFilter} onChange={setClientFilter} options={clientFilterOptions} />
             <Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} />
             <Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />
-            {canManage && <><Btn variant="ghost" onClick={() => setMediaPlanImportOpen(true)}>Import Media Plan</Btn><Btn icon="+" onClick={openNew}>New MPO</Btn></>}
+            {canManage && <>
+              <Btn
+                variant="blue"
+                icon="⬆"
+                onClick={() => setMediaPlanImportOpen(true)}
+                style={{ boxShadow: "0 10px 24px rgba(59,126,245,.22)", borderWidth: 1.5 }}
+              >
+                Import Media Plan
+              </Btn>
+              <Btn icon="+" onClick={openNew}>New MPO</Btn>
+            </>}
           </div>
           {canManage && hasSelectedMpos && (
             <Card style={{ marginTop: 12, padding: "14px 18px" }}>
