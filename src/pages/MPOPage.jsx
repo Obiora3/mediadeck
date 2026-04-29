@@ -100,6 +100,19 @@ const getPaidSpotCount = (spot = {}) => {
   return Math.max(0, total - getSpotBonusCount(spot));
 };
 
+const downloadMediaPlanImportCsv = (filename, headers, rows) => {
+  const csv = buildCSV(rows, headers);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+};
+
 const normalizeBonusAdjustedSpot = (baseSpot = {}, totalSpotsInput = 0, bonusSpotsInput = 0) => {
   const totalSpots = Math.max(0, Number(totalSpotsInput) || 0);
   const requestedBonus = baseSpot?.isComplimentary
