@@ -2769,7 +2769,7 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
                             </tr>
                           </thead>
                           <tbody>
-                            {group.rows.map((row, index) => (
+                            {group.rows.filter(row => Number(row.totalSpots) > 0).map((row, index) => (
                               <tr key={`${row.key}-${index}`} style={{ borderBottom: "1px solid var(--border)", background: index % 2 === 0 ? "transparent" : "rgba(255,255,255,.01)" }}>
                                 <td style={{ padding: "7px 8px", fontSize: 12 }}>{row.sourceRow}</td>
                                 <td style={{ padding: "7px 8px", fontSize: 12, fontWeight: 700 }}>{row.programme}</td>
