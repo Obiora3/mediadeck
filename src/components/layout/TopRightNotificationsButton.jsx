@@ -1,5 +1,6 @@
 const TopRightNotificationsButton = ({ count = 0, onClick }) => (
   <button
+    className="top-alert-button"
     onClick={onClick}
     title="Workspace alerts"
     style={{

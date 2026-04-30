@@ -3,6 +3,7 @@ import React from "react";
 export default function Modal({ title, children, onClose, width = 540 }) {
   return (
     <div
+      className="modal-backdrop"
       style={{
         position: "fixed",
         inset: 0,
@@ -17,7 +18,7 @@ export default function Modal({ title, children, onClose, width = 540 }) {
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="fade"
+        className="fade modal-panel"
         style={{
           background: "var(--bg2)",
           border: "1px solid var(--border2)",
@@ -68,7 +69,7 @@ export default function Modal({ title, children, onClose, width = 540 }) {
             ×
           </button>
         </div>
-        <div style={{ padding: 22 }}>{children}</div>
+        <div className="modal-body" style={{ padding: 22 }}>{children}</div>
       </div>
     </div>
   );

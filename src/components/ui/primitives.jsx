@@ -17,14 +17,24 @@ const GlobalStyle = ({ theme }) => (
       --red:#ef4444;--purple:#8b5cf6;--teal:#0d9488;--orange:#f97316;
       --font-body:'Inter',sans-serif;--font-heading:'Plus Jakarta Sans',sans-serif;
     }
-    html,body,#root{height:100%;font-family:var(--font-body);background:var(--bg);color:var(--text)}
+    html,body,#root{height:100%;width:100%;font-family:var(--font-body);background:var(--bg);color:var(--text);overflow-x:hidden}
+    #root{min-height:100dvh;text-align:initial;border:0}
     h1,h2,h3,h4,h5,h6,strong,th{color:var(--text);font-family:var(--font-heading)}
     p,span,label,td,li,small{color:inherit}
     input::placeholder,textarea::placeholder{color:var(--text3);opacity:1}
     select,option,input,textarea{color:var(--text)}
+    img,svg,canvas,video{max-width:100%}
     *{scrollbar-width:thin;scrollbar-color:var(--bg4) transparent}
     ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
     input,select,textarea,button{font-family:inherit}
+    input,select,textarea,button{max-width:100%}
+    .app-shell{display:flex;min-height:100vh;width:100%;max-width:100%;overflow-x:hidden}
+    .app-main{flex:1;min-width:0;width:100%;overflow-y:auto;overflow-x:hidden;padding:calc(env(titlebar-area-height, 0px) + 28px) 28px 52px;position:relative;box-sizing:border-box}
+    .desktop-sidebar{display:flex}
+    .mobile-topbar,.mobile-bottom-nav{display:none}
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(5px)}
+    .modal-panel{background:var(--bg2);border:1px solid var(--border2);border-radius:18px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 28px 80px rgba(0,0,0,.65)}
+    .modal-body{padding:22px}
     .fade{animation:fadeIn .25s ease}
     @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
     @keyframes spin{to{transform:rotate(360deg)}}
@@ -34,6 +44,59 @@ const GlobalStyle = ({ theme }) => (
       body{background:#fff!important;color:#000!important}
       .no-print{display:none!important}
       .print-area{display:block!important}
+    }
+    @media (max-width: 860px){
+      html,body,#root{height:auto;min-height:100dvh}
+      .app-shell{display:block!important;min-height:100dvh!important;padding-bottom:78px!important;overflow-x:hidden!important}
+      .app-main{width:100%!important;min-width:0!important;padding:72px 14px 92px!important;overflow:visible!important}
+      .desktop-sidebar{display:none!important}
+      .mobile-topbar{position:fixed;top:0;left:0;right:0;height:58px;z-index:70;display:flex;align-items:center;gap:10px;padding:9px 64px 9px 12px;background:var(--bg2);background:color-mix(in srgb,var(--bg2) 94%,transparent);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);box-shadow:0 10px 30px rgba(0,0,0,.12)}
+      .mobile-bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:75;display:flex;gap:4px;overflow-x:auto;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:var(--bg2);background:color-mix(in srgb,var(--bg2) 96%,transparent);border-top:1px solid var(--border);backdrop-filter:blur(16px);box-shadow:0 -14px 30px rgba(0,0,0,.14)}
+      .mobile-bottom-nav::-webkit-scrollbar{display:none}
+      .top-alert-button{top:9px!important;right:12px!important;width:40px!important;height:40px!important;font-size:17px!important;z-index:90!important}
+      .fade{max-width:100%}
+      .app-main h1{font-size:22px!important;line-height:1.15!important}
+      .app-main h2,.app-main h3{line-height:1.2}
+      .app-main [style*="justify-content: space-between"]{row-gap:10px}
+      .app-main [style*="grid-template-columns: 1fr 1fr"],
+      .app-main [style*="grid-template-columns: 1fr 340px"],
+      .app-main [style*="grid-template-columns: 1fr auto"],
+      .app-main [style*="grid-template-columns: 1fr 180px"],
+      .app-main [style*="grid-template-columns: 1fr 2fr"],
+      .app-main [style*="grid-template-columns: 2fr"],
+      .app-main [style*="grid-template-columns: 2.5fr"],
+      .app-main [style*="grid-template-columns: 3fr"],
+      .app-main [style*="grid-template-columns: 1.2fr"],
+      .app-main [style*="grid-template-columns: 1.15fr"],
+      .app-main [style*="grid-template-columns: 1.12fr"],
+      .app-main [style*="grid-template-columns: 1.3fr"],
+      .app-main [style*="grid-template-columns: 1.4fr"],
+      .app-main [style*="grid-template-columns: 1.5fr"],
+      .app-main [style*="grid-template-columns: 200px"],
+      .app-main [style*="grid-template-columns: auto 1fr auto"]{grid-template-columns:1fr!important}
+      .app-main [style*="grid-template-columns: repeat(4"],
+      .app-main [style*="grid-template-columns: repeat(5"],
+      .app-main [style*="grid-template-columns: repeat(6"]{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+      .app-main [style*="grid-template-columns: repeat(3"]{grid-template-columns:1fr!important}
+      .app-main [style*="minmax(300px"]{grid-template-columns:1fr!important}
+      .app-main [style*="min-width: 220px"],
+      .app-main [style*="min-width: 280px"],
+      .app-main [style*="min-width: 300px"]{min-width:0!important}
+      .app-main [style*="max-height: calc(100vh - 260px)"]{max-height:none!important}
+      .app-main [style*="padding: 22px"]{padding:16px!important}
+      .modal-backdrop{align-items:flex-end!important;padding:10px!important}
+      .modal-panel{max-width:100%!important;max-height:92dvh!important;border-radius:16px 16px 0 0}
+      .modal-body{padding:16px!important}
+      table{font-size:12px}
+    }
+    @media (max-width: 520px){
+      .app-main{padding-left:12px!important;padding-right:12px!important}
+      .mobile-bottom-nav{gap:2px;padding-left:8px;padding-right:8px}
+      .mobile-bottom-nav button{min-width:64px!important}
+      .app-main [style*="grid-template-columns: repeat(2"]{grid-template-columns:1fr!important}
+      .app-main [style*="gap: 20px"]{gap:12px!important}
+      .app-main [style*="gap: 18px"]{gap:14px!important}
+      .app-main [style*="gap: 14px"]{gap:12px!important}
     }
   `}</style>
 );
