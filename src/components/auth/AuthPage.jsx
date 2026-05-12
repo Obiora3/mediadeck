@@ -6,6 +6,73 @@ import { Field, Btn } from "../ui/primitives";
 /* ── AUTH ───────────────────────────────────────────────── */
 const AUTH_BG = "#f5f7fb";
 
+const EyeIcon = ({ crossed = false }) => (
+  <svg aria-hidden="true" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+    <circle cx="12" cy="12" r="3" />
+    {crossed && <path d="M4 4l16 16" />}
+  </svg>
+);
+
+const PasswordField = ({ label, value, onChange, placeholder, required, visible, onToggle, autoComplete }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+    {label && (
+      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em" }}>
+        {label}
+        {required && <span style={{ color: "var(--accent)", marginLeft: 3 }}>*</span>}
+      </label>
+    )}
+    <div style={{ position: "relative" }}>
+      <input
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        required={required}
+        autoComplete={autoComplete}
+        style={{
+          background: "var(--bg3)",
+          border: "1px solid var(--border2)",
+          borderRadius: 8,
+          padding: "9px 54px 9px 13px",
+          color: "var(--text)",
+          fontSize: 13,
+          outline: "none",
+          width: "100%",
+        }}
+        onFocus={(e) => { e.target.style.borderColor = "var(--accent)"; }}
+        onBlur={(e) => { e.target.style.borderColor = "var(--border2)"; }}
+      />
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label={`${visible ? "Hide" : "View"} ${label ? label.toLowerCase() : "password"}`}
+        aria-pressed={visible}
+        title={`${visible ? "Hide" : "View"} password`}
+        style={{
+          position: "absolute",
+          right: 8,
+          top: "50%",
+          transform: "translateY(-50%)",
+          border: "1px solid rgba(15,23,42,.10)",
+          background: "rgba(255,255,255,.82)",
+          color: "var(--text2)",
+          borderRadius: 7,
+          width: 34,
+          height: 30,
+          padding: 0,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+        }}
+      >
+        <EyeIcon crossed={visible} />
+      </button>
+    </div>
+  </div>
+);
+
 
 const AuthPage = ({ onLogin }) => {
   const [mode, setMode] = useState("login");
@@ -26,6 +93,7 @@ const AuthPage = ({ onLogin }) => {
   const [resetLoading, setResetLoading] = useState(false);
   const [existingAgencyMatch, setExistingAgencyMatch] = useState(null);
   const [agencyCheckLoading, setAgencyCheckLoading] = useState(false);
+  const [visiblePasswords, setVisiblePasswords] = useState({ password: false, confirm: false });
 
   const isRecoveryMode = mode === "recovery";
   const isRegisterMode = mode === "register";
@@ -47,15 +115,23 @@ const AuthPage = ({ onLogin }) => {
     setF((p) => ({ ...p, [k]: v }));
   };
 
+  const togglePasswordVisibility = (key) => {
+    setVisiblePasswords((p) => ({ ...p, [key]: !p[key] }));
+  };
+
   useEffect(() => {
     const previousHtmlBg = document.documentElement.style.backgroundColor;
     const previousBodyBg = document.body.style.backgroundColor;
+    const root = document.getElementById("root");
+    const previousRootBg = root?.style.backgroundColor || "";
     document.documentElement.style.backgroundColor = AUTH_BG;
     document.body.style.backgroundColor = AUTH_BG;
+    if (root) root.style.backgroundColor = AUTH_BG;
 
     return () => {
       document.documentElement.style.backgroundColor = previousHtmlBg;
       document.body.style.backgroundColor = previousBodyBg;
+      if (root) root.style.backgroundColor = previousRootBg;
     };
   }, []);
 
@@ -246,6 +322,7 @@ const AuthPage = ({ onLogin }) => {
     setMode(nextMode);
     setErr("");
     setInfo("");
+    setVisiblePasswords({ password: false, confirm: false });
     if (nextMode !== "register") {
       setExistingAgencyMatch(null);
       setAgencyCheckLoading(false);
@@ -578,21 +655,25 @@ const AuthPage = ({ onLogin }) => {
               required
             />
 
-            <Field
+            <PasswordField
               label={passwordLabel}
-              type="password"
               value={f.password}
               onChange={u("password")}
+              visible={visiblePasswords.password}
+              onToggle={() => togglePasswordVisibility("password")}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
               placeholder="••••••••"
               required
             />
 
             {(isRegisterMode || isRecoveryMode) && (
-              <Field
+              <PasswordField
                 label="Confirm Password"
-                type="password"
                 value={f.confirm}
                 onChange={u("confirm")}
+                visible={visiblePasswords.confirm}
+                onToggle={() => togglePasswordVisibility("confirm")}
+                autoComplete="new-password"
                 placeholder="••••••••"
               />
             )}
