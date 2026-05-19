@@ -4332,26 +4332,58 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
         <div style={{ display: "flex", flexDirection: "column", gap: (groupBy === "none" && !folderViewOpen) ? 10 : 18 }}>
           {mpoGroupsForRender.map((group) => (
             <div key={group.key}>
-              {(groupBy !== "none" || folderViewOpen) && (
-                <div style={{ display: "flex", alignItems: "center", gap: 0, width: "100%", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: collapsedGroups[group.key] ? 10 : "10px 10px 0 0", marginBottom: collapsedGroups[group.key] ? 0 : 2 }}>
-                  <button
-                    type="button"
-                    onClick={() => toggleGroup(group.key)}
-                    style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", minWidth: 0 }}
-                  >
-                    <span style={{ fontSize: 16 }}>{group.emoji || "📁"}</span>
-                    <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>{group.label}</span>
-                    <span style={{ fontSize: 12, color: "var(--text3)", fontWeight: 600, marginRight: 8, whiteSpace: "nowrap" }}>{group.mpos.length} MPO{group.mpos.length !== 1 ? "s" : ""}</span>
-                    <span style={{ fontSize: 12, color: "var(--text3)" }}>{collapsedGroups[group.key] ? "▶" : "▼"}</span>
-                  </button>
-                  {folderViewOpen && group.isUserFolder && (
-                    <div style={{ display: "flex", gap: 4, padding: "0 10px", flexShrink: 0 }}>
-                      <Btn size="sm" variant="ghost" onClick={() => setRenameFolderTarget({ ...group, name: group.label })} title="Rename folder">✏️</Btn>
-                      <Btn size="sm" variant="danger" onClick={() => setConfirm({ msg: `Delete folder "${group.label}"? MPOs will be moved to Unfiled.`, onYes: () => deleteFolder(group.folderId) })}>🗑</Btn>
-                    </div>
-                  )}
-                </div>
-              )}
+              {(groupBy !== "none" || folderViewOpen) && (() => {
+                const groupSelectedCount = group.mpos.filter(m => selectedMpoIds.includes(m.id)).length;
+                const groupAllSelected = group.mpos.length > 0 && groupSelectedCount === group.mpos.length;
+                const groupPartialSelected = groupSelectedCount > 0 && !groupAllSelected;
+                const toggleGroupSelection = () => {
+                  if (groupAllSelected) {
+                    setSelectedMpoIds(ids => ids.filter(id => !group.mpos.some(m => m.id === id)));
+                  } else {
+                    setSelectedMpoIds(ids => Array.from(new Set([...ids, ...group.mpos.map(m => m.id)])));
+                  }
+                };
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 0, width: "100%", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: collapsedGroups[group.key] ? 10 : "10px 10px 0 0", marginBottom: collapsedGroups[group.key] ? 0 : 2 }}>
+                    {canManage && group.mpos.length > 0 && (
+                      <label
+                        style={{ padding: "0 4px 0 14px", display: "flex", alignItems: "center", cursor: "pointer", flexShrink: 0 }}
+                        title={groupAllSelected ? "Deselect all in this group" : "Select all in this group"}
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={groupAllSelected}
+                          ref={el => { if (el) el.indeterminate = groupPartialSelected; }}
+                          onChange={toggleGroupSelection}
+                          style={{ width: 16, height: 16, accentColor: "var(--accent)", cursor: "pointer" }}
+                        />
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.key)}
+                      style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", minWidth: 0 }}
+                    >
+                      <span style={{ fontSize: 16 }}>{group.emoji || "📁"}</span>
+                      <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>{group.label}</span>
+                      {groupSelectedCount > 0 && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", background: "rgba(240,165,0,.15)", border: "1px solid rgba(240,165,0,.3)", borderRadius: 999, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                          {groupSelectedCount} selected
+                        </span>
+                      )}
+                      <span style={{ fontSize: 12, color: "var(--text3)", fontWeight: 600, marginRight: 8, whiteSpace: "nowrap" }}>{group.mpos.length} MPO{group.mpos.length !== 1 ? "s" : ""}</span>
+                      <span style={{ fontSize: 12, color: "var(--text3)" }}>{collapsedGroups[group.key] ? "▶" : "▼"}</span>
+                    </button>
+                    {folderViewOpen && group.isUserFolder && (
+                      <div style={{ display: "flex", gap: 4, padding: "0 10px", flexShrink: 0 }}>
+                        <Btn size="sm" variant="ghost" onClick={() => setRenameFolderTarget({ ...group, name: group.label })} title="Rename folder">✏️</Btn>
+                        <Btn size="sm" variant="danger" onClick={() => setConfirm({ msg: `Delete folder "${group.label}"? MPOs will be moved to Unfiled.`, onYes: () => deleteFolder(group.folderId) })}>🗑</Btn>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               {!collapsedGroups[group.key] && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, ...((groupBy !== "none" || folderViewOpen) ? { border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 10px 10px", padding: "10px 10px 10px" } : {}) }}>
                   {(folderViewOpen && group.mpos.length === 0) ? (
