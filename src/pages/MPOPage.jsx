@@ -2862,6 +2862,8 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const workflowPanelStorageKey = `msp_mpo_workflow_panel_${user?.id || "guest"}`;
   const [workflowPanelOpen, setWorkflowPanelOpen] = useState(() => store.get(workflowPanelStorageKey, true));
   const [mediaPlanImportOpen, setMediaPlanImportOpen] = useState(false);
+  const [groupBy, setGroupBy] = useState(() => store.get("mpo_groupby", "none"));
+  const [collapsedGroups, setCollapsedGroups] = useState({});
   const mpoListScrollRef = useRef(null);
 
   const VAT_RATE = parseFloat(appSettings?.vatRate) || 7.5;
@@ -3828,6 +3830,36 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const topQuickQueue = myWorkflowQueue.slice(0, 3);
   const visibleMpoCards = [...visibleMpos].sort((a, b) => b.createdAt - a.createdAt);
 
+  const GROUP_BY_OPTIONS = [
+    { value: "none", label: "No Grouping" },
+    { value: "campaign", label: "By Campaign" },
+    { value: "client", label: "By Client" },
+    { value: "vendor", label: "By Vendor" },
+    { value: "status", label: "By Status" },
+    { value: "month", label: "By Month / Year" },
+  ];
+  const getMpoGroupKey = (mpo) => {
+    if (groupBy === "campaign") return mpo.campaignName || "No Campaign";
+    if (groupBy === "client") return mpo.clientName || "No Client";
+    if (groupBy === "vendor") return mpo.vendorName || "No Vendor";
+    if (groupBy === "status") return MPO_STATUS_LABELS[mpo.status || "draft"] || mpo.status || "Draft";
+    if (groupBy === "month") return [`${(Array.isArray(mpo.months) && mpo.months.length ? mpo.months.join("–") : mpo.month || "")}`, mpo.year].filter(Boolean).join(" ") || "No Date";
+    return "all";
+  };
+  const mpoGroups = groupBy === "none"
+    ? [{ key: "all", label: "all", mpos: visibleMpoCards }]
+    : Object.entries(
+        visibleMpoCards.reduce((acc, mpo) => {
+          const key = getMpoGroupKey(mpo);
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(mpo);
+          return acc;
+        }, {})
+      )
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, items]) => ({ key, label: key, mpos: items }));
+  const toggleGroup = (key) => setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+
 
   if (view === "list") return (
     <div className="fade mpo-page-scroll" style={{ width: "100%" }}>
@@ -4084,6 +4116,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
             <Field value={clientFilter} onChange={setClientFilter} options={clientFilterOptions} />
             <Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} />
             <Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />
+            <Field value={groupBy} onChange={v => { setGroupBy(v); store.set("mpo_groupby", v); setCollapsedGroups({}); }} options={GROUP_BY_OPTIONS} />
             {canManage && <>
               <Btn
                 variant="blue"
@@ -4221,8 +4254,36 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       <div ref={mpoListScrollRef} style={{ width: "100%", overflowX: "auto", overflowY: "hidden", paddingBottom: 2 }}>
         <div style={{ minWidth: 1100, paddingBottom: 2 }}>
       {visibleMpos.length === 0 ? <Card><Empty icon="📄" title="No MPOs yet" sub="Create your first Media Purchase Order" /></Card> :
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {visibleMpoCards.map((m, cardIndex) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: groupBy === "none" ? 10 : 18 }}>
+          {mpoGroups.map((group) => (
+            <div key={group.key}>
+              {groupBy !== "none" && (
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    width: "100%",
+                    background: "var(--bg2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: collapsedGroups[group.key] ? 10 : "10px 10px 0 0",
+                    padding: "10px 16px",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    marginBottom: collapsedGroups[group.key] ? 0 : 2,
+                  }}
+                >
+                  <span style={{ fontSize: 16 }}>📁</span>
+                  <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1 }}>{group.label}</span>
+                  <span style={{ fontSize: 12, color: "var(--text3)", fontWeight: 600, marginRight: 8 }}>{group.mpos.length} MPO{group.mpos.length !== 1 ? "s" : ""}</span>
+                  <span style={{ fontSize: 12, color: "var(--text3)" }}>{collapsedGroups[group.key] ? "▶" : "▼"}</span>
+                </button>
+              )}
+              {!collapsedGroups[group.key] && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, ...(groupBy !== "none" ? { border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 10px 10px", padding: "10px 10px 10px" } : {}) }}>
+                  {group.mpos.map((m, cardIndex) => (
             <Card key={`${m.id || "mpo"}-${cardIndex}`} style={{ padding: "12px 16px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                 {canManage ? (
@@ -4365,6 +4426,10 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                 </div>
               </div>
             </Card>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </div>}
         </div>
