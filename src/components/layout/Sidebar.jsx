@@ -194,7 +194,7 @@ const Sidebar = ({
             width: "calc(100% - 12px)",
           }}
         >
-          {theme === "light" ? "Dark" : "Light"}
+          <span style={{ fontSize: 16, flexShrink: 0 }}>{theme === "light" ? "🌙" : "☀️"}</span>
           {!collapsed && <span style={{ fontSize: 11, fontWeight: 600 }}>{theme === "light" ? "Dark Mode" : "Light Mode"}</span>}
         </button>
         <button
