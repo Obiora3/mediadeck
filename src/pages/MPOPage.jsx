@@ -2868,12 +2868,14 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const folderMapKey = `mpo_folder_map_${user?.agencyId || "local"}`;
   const [folders, setFolders] = useState(() => store.get(foldersKey, []));
   const [folderMap, setFolderMap] = useState(() => store.get(folderMapKey, {}));
-  const [folderViewOpen, setFolderViewOpen] = useState(false);
+  const folderViewKey = `mpo_folder_view_${user?.agencyId || "local"}`;
+  const [folderViewOpen, setFolderViewOpen] = useState(() => store.get(folderViewKey, false));
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderEmoji, setNewFolderEmoji] = useState("📁");
   const [renameFolderTarget, setRenameFolderTarget] = useState(null);
   const [moveFolderMpoId, setMoveFolderMpoId] = useState(null);
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const mpoListScrollRef = useRef(null);
 
   const VAT_RATE = parseFloat(appSettings?.vatRate) || 7.5;
@@ -3893,6 +3895,12 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
     saveFolderMap(next);
     setMoveFolderMpoId(null);
   };
+  const bulkMoveMposToFolder = (folderId) => {
+    const next = { ...folderMap };
+    selectedVisibleMpoIds.forEach(id => { if (!folderId) delete next[id]; else next[id] = folderId; });
+    saveFolderMap(next);
+    setBulkMoveOpen(false);
+  };
   const mpoGroupsForRender = folderViewOpen
     ? [
         ...folders.map(folder => ({
@@ -4173,7 +4181,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
             <Btn
               variant={folderViewOpen ? "accent" : "ghost"}
               icon="📁"
-              onClick={() => setFolderViewOpen(v => !v)}
+              onClick={() => setFolderViewOpen(v => { store.set(folderViewKey, !v); return !v; })}
             >
               {folderViewOpen ? "Hide Folders" : "Folders"}
             </Btn>
@@ -4199,6 +4207,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                   <Badge color={selectedVisibleMpoIds.length ? "accent" : "blue"}>{selectedVisibleMpoIds.length} selected</Badge>
                   <Btn variant="ghost" size="sm" onClick={() => setSelectedMpoIds([])}>Clear Selection</Btn>
+                  <Btn variant="ghost" size="sm" icon="📁" onClick={() => setBulkMoveOpen(true)}>Move to Folder</Btn>
                   <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive ${selectedVisibleMpoIds.length} selected MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""}?`, onYes: archiveSelectedMpos })} disabled={Boolean(deleteProgress)}>Archive Selected</Btn>
                   <Btn
                     variant="danger"
@@ -4504,6 +4513,36 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
         </div>}
         </div>
       </div>
+
+      {/* Bulk move to folder modal */}
+      {bulkMoveOpen && (
+        <Modal title={`Move ${selectedVisibleMpoIds.length} MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""} to folder`} onClose={() => setBulkMoveOpen(false)} width={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {folders.length === 0 && (
+              <div style={{ fontSize: 13, color: "var(--text2)", marginBottom: 6 }}>No folders yet. Create a folder first using the <strong>New Folder</strong> button in Folders view.</div>
+            )}
+            {folders.map(folder => (
+              <button
+                key={folder.id}
+                type="button"
+                onClick={() => bulkMoveMposToFolder(folder.id)}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--bg3)", cursor: "pointer", textAlign: "left" }}
+              >
+                <span style={{ fontSize: 18 }}>{folder.emoji || "📁"}</span>
+                <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1, color: "var(--text)" }}>{folder.name}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => bulkMoveMposToFolder(null)}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--bg3)", cursor: "pointer", textAlign: "left", marginTop: 4 }}
+            >
+              <span style={{ fontSize: 18 }}>📂</span>
+              <span style={{ fontSize: 14, color: "var(--text2)" }}>Remove from folder (Unfiled)</span>
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {/* Create folder modal */}
       {newFolderOpen && (
