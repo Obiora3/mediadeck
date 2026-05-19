@@ -2863,7 +2863,8 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const [workflowPanelOpen, setWorkflowPanelOpen] = useState(() => store.get(workflowPanelStorageKey, true));
   const [mediaPlanImportOpen, setMediaPlanImportOpen] = useState(false);
   const [groupBy, setGroupBy] = useState(() => store.get("mpo_groupby", "none"));
-  const [collapsedGroups, setCollapsedGroups] = useState({});
+  const collapsedGroupsKey = `mpo_collapsed_groups_${user?.agencyId || "local"}`;
+  const [collapsedGroups, setCollapsedGroups] = useState(() => store.get(collapsedGroupsKey, {}));
   const foldersKey = `mpo_folders_${user?.agencyId || "local"}`;
   const folderMapKey = `mpo_folder_map_${user?.agencyId || "local"}`;
   const [folders, setFolders] = useState(() => store.get(foldersKey, []));
@@ -3870,7 +3871,21 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
       )
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([key, items]) => ({ key, label: key, mpos: items }));
-  const toggleGroup = (key) => setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggleGroup = (key) => setCollapsedGroups(prev => {
+    const next = { ...prev, [key]: !prev[key] };
+    store.set(collapsedGroupsKey, next);
+    return next;
+  });
+  const collapseAllGroups = (groups) => {
+    const next = Object.fromEntries(groups.map(g => [g.key, true]));
+    setCollapsedGroups(next);
+    store.set(collapsedGroupsKey, next);
+  };
+  const expandAllGroups = (groups) => {
+    const next = Object.fromEntries(groups.map(g => [g.key, false]));
+    setCollapsedGroups(next);
+    store.set(collapsedGroupsKey, next);
+  };
 
   const saveFolders = (next) => { setFolders(next); store.set(foldersKey, next); };
   const saveFolderMap = (next) => { setFolderMap(next); store.set(folderMapKey, next); };
@@ -4177,7 +4192,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
             <Field value={clientFilter} onChange={setClientFilter} options={clientFilterOptions} />
             <Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} />
             <Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />
-            <Field value={groupBy} onChange={v => { setGroupBy(v); store.set("mpo_groupby", v); setCollapsedGroups({}); }} options={GROUP_BY_OPTIONS} />
+            <Field value={groupBy} onChange={v => { setGroupBy(v); store.set("mpo_groupby", v); setCollapsedGroups({}); store.set(collapsedGroupsKey, {}); }} options={GROUP_BY_OPTIONS} />
             <Btn
               variant={folderViewOpen ? "accent" : "ghost"}
               icon="📁"
@@ -4320,12 +4335,29 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           </div>
         )}
       </Card>
-      {folderViewOpen && (
-        <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <Btn icon="📁" onClick={() => setNewFolderOpen(true)}>New Folder</Btn>
-          <span style={{ fontSize: 13, color: "var(--text3)" }}>{folders.length} folder{folders.length !== 1 ? "s" : ""} · {visibleMpoCards.filter(m => !folders.find(f => f.id === folderMap[m.id])).length} unfiled</span>
-        </div>
-      )}
+      {(folderViewOpen || groupBy !== "none") && (() => {
+        const activeGroups = mpoGroupsForRender.filter(g => g.mpos.length > 0);
+        const allCollapsed = activeGroups.length > 0 && activeGroups.every(g => collapsedGroups[g.key]);
+        return (
+          <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            {folderViewOpen && <Btn icon="📁" onClick={() => setNewFolderOpen(true)}>New Folder</Btn>}
+            {activeGroups.length > 0 && (
+              <Btn
+                variant="ghost"
+                size="sm"
+                onClick={() => allCollapsed ? expandAllGroups(activeGroups) : collapseAllGroups(activeGroups)}
+              >
+                {allCollapsed ? "▶ Expand All" : "▼ Collapse All"}
+              </Btn>
+            )}
+            {folderViewOpen && (
+              <span style={{ fontSize: 13, color: "var(--text3)" }}>
+                {folders.length} folder{folders.length !== 1 ? "s" : ""} · {visibleMpoCards.filter(m => !folders.find(f => f.id === folderMap[m.id])).length} unfiled
+              </span>
+            )}
+          </div>
+        );
+      })()}
       <div ref={mpoListScrollRef} style={{ width: "100%", overflowX: "auto", overflowY: "hidden", paddingBottom: 2 }}>
         <div style={{ minWidth: 1100, paddingBottom: 2 }}>
       {visibleMpos.length === 0 ? <Card><Empty icon="📄" title="No MPOs yet" sub="Create your first Media Purchase Order" /></Card> :
