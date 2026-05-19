@@ -290,6 +290,7 @@ export default function App() {
 // MPOs now come from Supabase
 
   const [authReady, setAuthReady] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const { canInstall, showBanner, isInstalling, install, dismissBanner } = usePwaInstall();
   const mpoBulkImportRef = useRef(false);
   const refreshMposRef = useRef(async () => {});
@@ -338,9 +339,15 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
-      setAuthUser(session?.user || null);
+      if (event === "SIGNED_OUT") {
+        setAuthUser(null);
+      } else if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "SIGNED_IN" || event === "PASSWORD_RECOVERY") {
+        if (session?.user) setAuthUser(session.user);
+      } else if (event === "INITIAL_SESSION") {
+        setAuthUser(session?.user || null);
+      }
       setAuthReady(true);
       clearTimeout(timeout);
     });
@@ -358,6 +365,10 @@ export default function App() {
     const hydrateUser = async () => {
       if (!authUser?.id) {
         if (active) {
+          setSessionExpired(prev => {
+            // Only show "session expired" if user was previously logged in
+            return user !== null ? true : prev;
+          });
           resetWorkspaceState();
           setAuthReady(true);
         }
@@ -375,6 +386,7 @@ export default function App() {
 
         if (!active) return;
 
+        setSessionExpired(false);
         setUser(
           appUser
             ? { ...appUser, agencyId: appUser.agencyId || agencyId || null }
@@ -383,6 +395,7 @@ export default function App() {
       } catch (error) {
         console.error("Failed to load user:", error);
         if (!active) return;
+        setSessionExpired(false);
         setUser(buildFallbackAppUser(authUser));
       }
     };
@@ -595,9 +608,10 @@ export default function App() {
       try {
         const agencyId = await ensureAgencyForUser(authUser);
         const refreshed = await loadAppUserFromSupabase(authUser);
+        if (!refreshed) return;
         setUser(prev => {
-          const next = refreshed ? { ...(prev || {}), ...refreshed, agencyId: refreshed.agencyId || agencyId || prev?.agencyId || null } : prev;
-          return next || null;
+          if (!prev) return prev;
+          return { ...prev, ...refreshed, agencyId: refreshed.agencyId || agencyId || prev.agencyId || null };
         });
       } catch (error) {
         console.error("Failed to refresh user:", error);
@@ -868,6 +882,7 @@ export default function App() {
   }, [user?.agencyId, receivablesSync.mode, switchReceivablesToLocalFallback, updateLocalReceivableStatus]);
 
   const handleLogout = async () => {
+    setSessionExpired(false);
     resetWorkspaceState();
 
     try {
@@ -911,7 +926,7 @@ if (!user) {
   return (
     <>
       <GlobalStyle theme={theme} />
-      <AuthPage />
+      <AuthPage sessionExpired={sessionExpired} />
       <PwaInstallPrompt show={showBanner} onInstall={install} onDismiss={dismissBanner} isInstalling={isInstalling} />
     </>
   );

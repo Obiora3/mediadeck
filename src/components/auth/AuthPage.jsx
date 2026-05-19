@@ -57,9 +57,9 @@ const PasswordField = ({ label, value, onChange, placeholder, required, visible,
           border: "1px solid rgba(15,23,42,.10)",
           background: "rgba(255,255,255,.82)",
           color: "var(--text2)",
-          borderRadius: 7,
-          width: 34,
-          height: 30,
+          borderRadius: 5,
+          width: 24,
+          height: 21,
           padding: 0,
           display: "inline-flex",
           alignItems: "center",
@@ -74,7 +74,7 @@ const PasswordField = ({ label, value, onChange, placeholder, required, visible,
 );
 
 
-const AuthPage = ({ onLogin }) => {
+const AuthPage = ({ onLogin, sessionExpired = false }) => {
   const [mode, setMode] = useState("login");
   const [f, setF] = useState({
     name: "",
@@ -381,6 +381,22 @@ const AuthPage = ({ onLogin }) => {
             padding: "clamp(28px, 3.5vw, 36px)",
           }}
         >
+          {sessionExpired && (
+            <div
+              style={{
+                background: "rgba(217,119,6,.10)",
+                border: "1px solid rgba(217,119,6,.30)",
+                borderRadius: 12,
+                padding: "11px 14px",
+                marginBottom: 16,
+                fontSize: 13,
+                color: "#92400e",
+                lineHeight: 1.5,
+              }}
+            >
+              Your session expired. Sign in again to continue.
+            </div>
+          )}
           <div
             style={{
               display: "flex",

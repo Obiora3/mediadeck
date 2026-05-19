@@ -32,7 +32,7 @@ export const ensureAgencyForUser = async (authUser) => {
     .from("profiles")
     .select("agency_id")
     .eq("id", authUser.id)
-    .single();
+    .maybeSingle();
 
   if (profileError) throw profileError;
   if (profile?.agency_id) return profile.agency_id;
