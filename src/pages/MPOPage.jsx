@@ -4331,7 +4331,7 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                     style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", minWidth: 0 }}
                   >
                     <span style={{ fontSize: 16 }}>{group.emoji || "📁"}</span>
-                    <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.label}</span>
+                    <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>{group.label}</span>
                     <span style={{ fontSize: 12, color: "var(--text3)", fontWeight: 600, marginRight: 8, whiteSpace: "nowrap" }}>{group.mpos.length} MPO{group.mpos.length !== 1 ? "s" : ""}</span>
                     <span style={{ fontSize: 12, color: "var(--text3)" }}>{collapsedGroups[group.key] ? "▶" : "▼"}</span>
                   </button>
