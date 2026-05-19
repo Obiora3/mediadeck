@@ -2864,6 +2864,16 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   const [mediaPlanImportOpen, setMediaPlanImportOpen] = useState(false);
   const [groupBy, setGroupBy] = useState(() => store.get("mpo_groupby", "none"));
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const foldersKey = `mpo_folders_${user?.agencyId || "local"}`;
+  const folderMapKey = `mpo_folder_map_${user?.agencyId || "local"}`;
+  const [folders, setFolders] = useState(() => store.get(foldersKey, []));
+  const [folderMap, setFolderMap] = useState(() => store.get(folderMapKey, {}));
+  const [folderViewOpen, setFolderViewOpen] = useState(false);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderEmoji, setNewFolderEmoji] = useState("📁");
+  const [renameFolderTarget, setRenameFolderTarget] = useState(null);
+  const [moveFolderMpoId, setMoveFolderMpoId] = useState(null);
   const mpoListScrollRef = useRef(null);
 
   const VAT_RATE = parseFloat(appSettings?.vatRate) || 7.5;
@@ -3860,6 +3870,49 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
         .map(([key, items]) => ({ key, label: key, mpos: items }));
   const toggleGroup = (key) => setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
 
+  const saveFolders = (next) => { setFolders(next); store.set(foldersKey, next); };
+  const saveFolderMap = (next) => { setFolderMap(next); store.set(folderMapKey, next); };
+  const createFolder = () => {
+    if (!newFolderName.trim()) return;
+    saveFolders([...folders, { id: uid(), name: newFolderName.trim(), emoji: newFolderEmoji || "📁", createdAt: Date.now() }]);
+    setNewFolderName(""); setNewFolderEmoji("📁"); setNewFolderOpen(false);
+  };
+  const renameFolder = (folderId, name, emoji) => {
+    saveFolders(folders.map(f => f.id === folderId ? { ...f, name: name.trim(), emoji: emoji || "📁" } : f));
+    setRenameFolderTarget(null);
+  };
+  const deleteFolder = (folderId) => {
+    saveFolders(folders.filter(f => f.id !== folderId));
+    const next = { ...folderMap };
+    Object.keys(next).forEach(k => { if (next[k] === folderId) delete next[k]; });
+    saveFolderMap(next);
+  };
+  const moveMpoToFolder = (mpoId, folderId) => {
+    const next = { ...folderMap };
+    if (!folderId) delete next[mpoId]; else next[mpoId] = folderId;
+    saveFolderMap(next);
+    setMoveFolderMpoId(null);
+  };
+  const mpoGroupsForRender = folderViewOpen
+    ? [
+        ...folders.map(folder => ({
+          key: `folder_${folder.id}`,
+          label: folder.name,
+          emoji: folder.emoji || "📁",
+          folderId: folder.id,
+          mpos: visibleMpoCards.filter(m => folderMap[m.id] === folder.id),
+          isUserFolder: true,
+        })),
+        {
+          key: "unfiled",
+          label: "Unfiled",
+          emoji: "📂",
+          folderId: null,
+          mpos: visibleMpoCards.filter(m => !folders.find(f => f.id === folderMap[m.id])),
+          isUserFolder: false,
+        },
+      ]
+    : mpoGroups;
 
   if (view === "list") return (
     <div className="fade mpo-page-scroll" style={{ width: "100%" }}>
@@ -4117,6 +4170,13 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
             <Field value={statusFilter} onChange={setStatusFilter} options={[{value:"all",label:"All Statuses"}, ...MPO_STATUS_OPTIONS.map(o => ({ value: o.value, label: o.label }))]} />
             <Field value={viewMode} onChange={setViewMode} options={[{value:"active",label:"Active"},{value:"archived",label:"Archived"},{value:"all",label:"All"}]} />
             <Field value={groupBy} onChange={v => { setGroupBy(v); store.set("mpo_groupby", v); setCollapsedGroups({}); }} options={GROUP_BY_OPTIONS} />
+            <Btn
+              variant={folderViewOpen ? "accent" : "ghost"}
+              icon="📁"
+              onClick={() => setFolderViewOpen(v => !v)}
+            >
+              {folderViewOpen ? "Hide Folders" : "Folders"}
+            </Btn>
             {canManage && <>
               <Btn
                 variant="blue"
@@ -4251,38 +4311,45 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
           </div>
         )}
       </Card>
+      {folderViewOpen && (
+        <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <Btn icon="📁" onClick={() => setNewFolderOpen(true)}>New Folder</Btn>
+          <span style={{ fontSize: 13, color: "var(--text3)" }}>{folders.length} folder{folders.length !== 1 ? "s" : ""} · {visibleMpoCards.filter(m => !folders.find(f => f.id === folderMap[m.id])).length} unfiled</span>
+        </div>
+      )}
       <div ref={mpoListScrollRef} style={{ width: "100%", overflowX: "auto", overflowY: "hidden", paddingBottom: 2 }}>
         <div style={{ minWidth: 1100, paddingBottom: 2 }}>
       {visibleMpos.length === 0 ? <Card><Empty icon="📄" title="No MPOs yet" sub="Create your first Media Purchase Order" /></Card> :
-        <div style={{ display: "flex", flexDirection: "column", gap: groupBy === "none" ? 10 : 18 }}>
-          {mpoGroups.map((group) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: (groupBy === "none" && !folderViewOpen) ? 10 : 18 }}>
+          {mpoGroupsForRender.map((group) => (
             <div key={group.key}>
-              {groupBy !== "none" && (
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(group.key)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    width: "100%",
-                    background: "var(--bg2)",
-                    border: "1px solid var(--border)",
-                    borderRadius: collapsedGroups[group.key] ? 10 : "10px 10px 0 0",
-                    padding: "10px 16px",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    marginBottom: collapsedGroups[group.key] ? 0 : 2,
-                  }}
-                >
-                  <span style={{ fontSize: 16 }}>📁</span>
-                  <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1 }}>{group.label}</span>
-                  <span style={{ fontSize: 12, color: "var(--text3)", fontWeight: 600, marginRight: 8 }}>{group.mpos.length} MPO{group.mpos.length !== 1 ? "s" : ""}</span>
-                  <span style={{ fontSize: 12, color: "var(--text3)" }}>{collapsedGroups[group.key] ? "▶" : "▼"}</span>
-                </button>
+              {(groupBy !== "none" || folderViewOpen) && (
+                <div style={{ display: "flex", alignItems: "center", gap: 0, width: "100%", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: collapsedGroups[group.key] ? 10 : "10px 10px 0 0", marginBottom: collapsedGroups[group.key] ? 0 : 2 }}>
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group.key)}
+                    style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, padding: "10px 16px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", minWidth: 0 }}
+                  >
+                    <span style={{ fontSize: 16 }}>{group.emoji || "📁"}</span>
+                    <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.label}</span>
+                    <span style={{ fontSize: 12, color: "var(--text3)", fontWeight: 600, marginRight: 8, whiteSpace: "nowrap" }}>{group.mpos.length} MPO{group.mpos.length !== 1 ? "s" : ""}</span>
+                    <span style={{ fontSize: 12, color: "var(--text3)" }}>{collapsedGroups[group.key] ? "▶" : "▼"}</span>
+                  </button>
+                  {folderViewOpen && group.isUserFolder && (
+                    <div style={{ display: "flex", gap: 4, padding: "0 10px", flexShrink: 0 }}>
+                      <Btn size="sm" variant="ghost" onClick={() => setRenameFolderTarget({ ...group, name: group.label })} title="Rename folder">✏️</Btn>
+                      <Btn size="sm" variant="danger" onClick={() => setConfirm({ msg: `Delete folder "${group.label}"? MPOs will be moved to Unfiled.`, onYes: () => deleteFolder(group.folderId) })}>🗑</Btn>
+                    </div>
+                  )}
+                </div>
               )}
               {!collapsedGroups[group.key] && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, ...(groupBy !== "none" ? { border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 10px 10px", padding: "10px 10px 10px" } : {}) }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, ...((groupBy !== "none" || folderViewOpen) ? { border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 10px 10px", padding: "10px 10px 10px" } : {}) }}>
+                  {(folderViewOpen && group.mpos.length === 0) ? (
+                    <div style={{ padding: "18px 14px", textAlign: "center", color: "var(--text3)", fontSize: 13 }}>
+                      {group.isUserFolder ? "No MPOs in this folder. Use the 📁 Move button on any MPO card." : "All MPOs are organised into folders."}
+                    </div>
+                  ) : null}
                   {group.mpos.map((m, cardIndex) => (
             <Card key={`${m.id || "mpo"}-${cardIndex}`} style={{ padding: "12px 16px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
@@ -4421,6 +4488,9 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
                   <Btn variant="ghost" size="sm" onClick={() => openExecutionModal(m)} icon="📦">Execution</Btn>
                   <Btn variant="ghost" size="sm" onClick={() => openMpoHistory(m)} icon="🕘">History</Btn>
                   <Btn variant="blue" size="sm" onClick={() => openPreview(m)} icon="⬇">Preview & Export</Btn>
+                  <Btn variant="ghost" size="sm" onClick={() => setMoveFolderMpoId(m.id)} title={`Move to folder (currently: ${folders.find(f => f.id === folderMap[m.id])?.name || "Unfiled"})`}>
+                    {folders.find(f => f.id === folderMap[m.id]) ? `📁 ${folders.find(f => f.id === folderMap[m.id]).name}` : "📂 Move to folder"}
+                  </Btn>
                   {isArchived(m) ? <Btn variant="success" size="sm" onClick={() => restoreMPO(m.id)}>↩</Btn> : <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Archive MPO "${m.mpoNo || m.id}"?`, onYes: () => archiveMPO(m.id) })}>🗄</Btn>}
                   <Btn variant="danger" size="sm" onClick={() => setConfirm({ msg: `Delete MPO "${m.mpoNo || m.id}"? This cannot be undone.`, onYes: () => deleteMPO(m.id) })}>🗑</Btn>
                 </div>
@@ -4434,6 +4504,78 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
         </div>}
         </div>
       </div>
+
+      {/* Create folder modal */}
+      {newFolderOpen && (
+        <Modal title="New Folder" onClose={() => { setNewFolderOpen(false); setNewFolderName(""); setNewFolderEmoji("📁"); }} width={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Field label="Emoji" value={newFolderEmoji} onChange={setNewFolderEmoji} placeholder="📁" style={{ width: 70 }} />
+              <div style={{ flex: 1 }}><Field label="Folder name" value={newFolderName} onChange={setNewFolderName} placeholder="e.g. Q1 Campaigns" /></div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={createFolder} disabled={!newFolderName.trim()}>Create Folder</Btn>
+              <Btn variant="ghost" onClick={() => { setNewFolderOpen(false); setNewFolderName(""); setNewFolderEmoji("📁"); }}>Cancel</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Rename folder modal */}
+      {renameFolderTarget && (
+        <Modal title="Rename Folder" onClose={() => setRenameFolderTarget(null)} width={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Field label="Emoji" value={renameFolderTarget.emoji || "📁"} onChange={v => setRenameFolderTarget(t => ({ ...t, emoji: v }))} placeholder="📁" style={{ width: 70 }} />
+              <div style={{ flex: 1 }}><Field label="Folder name" value={renameFolderTarget.name || ""} onChange={v => setRenameFolderTarget(t => ({ ...t, name: v }))} /></div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={() => renameFolder(renameFolderTarget.folderId, renameFolderTarget.name, renameFolderTarget.emoji)} disabled={!renameFolderTarget.name?.trim()}>Save</Btn>
+              <Btn variant="ghost" onClick={() => setRenameFolderTarget(null)}>Cancel</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Move to folder modal */}
+      {moveFolderMpoId && (() => {
+        const mpo = visibleMpoCards.find(m => m.id === moveFolderMpoId);
+        const currentFolderId = folderMap[moveFolderMpoId] || null;
+        return (
+          <Modal title={`Move "${mpo?.mpoNo || "MPO"}" to folder`} onClose={() => setMoveFolderMpoId(null)} width={400}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {folders.length === 0 && (
+                <div style={{ fontSize: 13, color: "var(--text2)", marginBottom: 6 }}>No folders yet. Create a folder first using the <strong>New Folder</strong> button.</div>
+              )}
+              {folders.map(folder => (
+                <button
+                  key={folder.id}
+                  type="button"
+                  onClick={() => moveMpoToFolder(moveFolderMpoId, folder.id)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, border: `1px solid ${currentFolderId === folder.id ? "var(--accent)" : "var(--border)"}`, background: currentFolderId === folder.id ? "rgba(240,165,0,.10)" : "var(--bg3)", cursor: "pointer", textAlign: "left" }}
+                >
+                  <span style={{ fontSize: 18 }}>{folder.emoji || "📁"}</span>
+                  <span style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 14, flex: 1 }}>{folder.name}</span>
+                  {currentFolderId === folder.id && <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 700 }}>Current</span>}
+                </button>
+              ))}
+              {currentFolderId && (
+                <button
+                  type="button"
+                  onClick={() => moveMpoToFolder(moveFolderMpoId, null)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--bg3)", cursor: "pointer", textAlign: "left", marginTop: 4 }}
+                >
+                  <span style={{ fontSize: 18 }}>📂</span>
+                  <span style={{ fontSize: 14, color: "var(--text2)" }}>Remove from folder (Unfiled)</span>
+                </button>
+              )}
+              {folders.length === 0 && (
+                <Btn onClick={() => { setMoveFolderMpoId(null); setNewFolderOpen(true); }}>Create New Folder</Btn>
+              )}
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 
