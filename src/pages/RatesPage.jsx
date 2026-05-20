@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -657,4 +657,4 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
 };
 
 
-export default RatesPage;
+export default memo(RatesPage);

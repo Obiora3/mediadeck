@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -135,4 +135,4 @@ const ClientsPage = ({ clients, setClients, user }) => {
 };
 
 
-export default ClientsPage;
+export default memo(ClientsPage);

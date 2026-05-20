@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
 import { Btn, Field, Card } from "../components/ui/primitives";
 import { MPO_STATUS_OPTIONS } from "../constants/mpoWorkflow";
 import { formatNairaExportValue, formatExportRowsWithCurrency } from "../utils/export";
 
-export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, activeOnly, fmtN, MPO_STATUS_LABELS, PrintPreview, buildCSV }) {
+function ReportsPage({ vendors, clients, campaigns, rates, mpos, activeOnly, fmtN, MPO_STATUS_LABELS, PrintPreview, buildCSV }) {
   const [toast, setToast] = useState(null);
   const [preview, setPreview] = useState(null);
   const [filters, setFilters] = useState({
@@ -625,4 +625,6 @@ export default function ReportsPage({ vendors, clients, campaigns, rates, mpos, 
       )}
     </div>
   );
-};
+}
+
+export default memo(ReportsPage);

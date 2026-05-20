@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { supabase } from "./lib/supabase";
 import Badge from "./components/Badge";
@@ -663,7 +663,7 @@ export default function App() {
       mpoRefreshTimerRef.current = setTimeout(() => {
         mpoRefreshTimerRef.current = null;
         runRefresh();
-      }, 1200);
+      }, 300);
     };
     refreshMposRef.current = refreshMpos;
     const refreshMembers = async () => {
@@ -731,7 +731,10 @@ export default function App() {
     await refreshMposRef.current?.({ immediate: true });
   };
 
-  const unreadNotifications = notifications.filter(notification => !notification.readAt).length;
+  const unreadNotifications = useMemo(
+    () => notifications.filter(notification => !notification.readAt).length,
+    [notifications]
+  );
 
   const openNotificationsSettings = () => {
     setSettingsOpenSection({ section: "notifications", key: Date.now() });
@@ -932,7 +935,11 @@ if (!user) {
   );
 }
 
-  const pp = { vendors, clients, campaigns, rates, mpos, receivables, notifications, unreadNotifications, setVendors, setClients, setCampaigns, setRates, setMpos, setReceivables };
+  const pp = useMemo(() => ({
+    vendors, clients, campaigns, rates, mpos, receivables,
+    notifications, unreadNotifications,
+    setVendors, setClients, setCampaigns, setRates, setMpos, setReceivables,
+  }), [vendors, clients, campaigns, rates, mpos, receivables, notifications, unreadNotifications]);
 
   return (
     <>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -175,4 +175,4 @@ const CampaignsPage = ({ campaigns, setCampaigns, clients, user }) => {
 };
 
 
-export default CampaignsPage;
+export default memo(CampaignsPage);

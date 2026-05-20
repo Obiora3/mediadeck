@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -153,4 +153,4 @@ const hardDelete = async (id, name) => {
 };
 
 
-export default VendorsPage;
+export default memo(VendorsPage);

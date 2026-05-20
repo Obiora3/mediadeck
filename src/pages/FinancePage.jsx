@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -1427,4 +1427,4 @@ const FinancePage = ({ user, vendors, clients, campaigns, mpos, receivables, rec
   );
 };
 
-export default FinancePage;
+export default memo(FinancePage);

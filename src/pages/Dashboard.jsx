@@ -1,3 +1,4 @@
+import { memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import { fmtN } from "../utils/formatters";
@@ -243,4 +244,4 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
   );
 };
 
-export default Dashboard;
+export default memo(Dashboard);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -2838,7 +2838,7 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
   );
 };
 
-export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors, user, appSettings, onBulkImportStateChange, requestMpoRefresh }) {
+function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors, user, appSettings, onBulkImportStateChange, requestMpoRefresh }) {
   const canManage = hasPermission(user, "manageMpos");
   const canManageStatus = hasPermission(user, "manageMpoStatus") || canManage;
   const [view, setView] = useState("list");
@@ -5420,3 +5420,5 @@ export default function MPOPage({ vendors, clients, campaigns, rates, mpos, setM
   );
 
 }
+
+export default memo(MPOPage);

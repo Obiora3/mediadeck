@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import Badge from "../components/Badge";
 import Empty from "../components/Empty";
 import Toast from "../components/Toast";
@@ -774,4 +774,4 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
 
 /* ── BUDGETING & BILLING ─────────────────────────────────── */
 
-export default SettingsPage;
+export default memo(SettingsPage);
