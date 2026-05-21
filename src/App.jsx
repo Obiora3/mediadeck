@@ -903,6 +903,12 @@ export default function App() {
     }
   }, [page, settingsOpenSection]);
 
+  const pp = useMemo(() => ({
+    vendors, clients, campaigns, rates, mpos, receivables,
+    notifications, unreadNotifications,
+    setVendors, setClients, setCampaigns, setRates, setMpos, setReceivables,
+  }), [vendors, clients, campaigns, rates, mpos, receivables, notifications, unreadNotifications]);
+
 if (!authReady) {
   return (
     <>
@@ -934,12 +940,6 @@ if (!user) {
     </>
   );
 }
-
-  const pp = useMemo(() => ({
-    vendors, clients, campaigns, rates, mpos, receivables,
-    notifications, unreadNotifications,
-    setVendors, setClients, setCampaigns, setRates, setMpos, setReceivables,
-  }), [vendors, clients, campaigns, rates, mpos, receivables, notifications, unreadNotifications]);
 
   return (
     <>

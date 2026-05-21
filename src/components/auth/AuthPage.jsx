@@ -1,25 +1,62 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { normalizeAgencyCode, findExistingAgencyByName } from "../../services/agencies";
-import { Field, Btn } from "../ui/primitives";
 
-/* ── AUTH ───────────────────────────────────────────────── */
-const AUTH_BG = "#f5f7fb";
-
+/* ── ICONS ─────────────────────────────────────────────────── */
 const EyeIcon = ({ crossed = false }) => (
-  <svg aria-hidden="true" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
     <circle cx="12" cy="12" r="3" />
     {crossed && <path d="M4 4l16 16" />}
   </svg>
 );
 
-const PasswordField = ({ label, value, onChange, placeholder, required, visible, onToggle, autoComplete }) => (
-  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+const GoogleIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+    <path d="M17.64 9.2a10.34 10.34 0 0 0-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92C16.68 12.01 17.64 9.69 17.64 9.2Z" fill="#4285F4"/>
+    <path d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.71H.99v2.34A8.997 8.997 0 0 0 9 18Z" fill="#34A853"/>
+    <path d="M3.97 10.71A5.41 5.41 0 0 1 3.69 9c0-.59.1-1.17.28-1.71V4.95H.99A9 9 0 0 0 0 9c0 1.45.35 2.82.99 4.05l2.98-2.34Z" fill="#FBBC05"/>
+    <path d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A8.997 8.997 0 0 0 .99 4.95L3.97 7.29C4.68 5.16 6.66 3.58 9 3.58Z" fill="#EA4335"/>
+  </svg>
+);
+
+/* ── PILL INPUT ─────────────────────────────────────────────── */
+const PillInput = ({ label, type = "text", value, onChange, placeholder, required, autoComplete, note }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
     {label && (
-      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".08em" }}>
-        {label}
-        {required && <span style={{ color: "var(--accent)", marginLeft: 3 }}>*</span>}
+      <label style={{ fontSize: 13, fontWeight: 600, color: "#64748b", fontFamily: "'Inter', sans-serif" }}>
+        {label}{required && <span style={{ color: "#ef4444", marginLeft: 3 }}>*</span>}
+      </label>
+    )}
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      required={required}
+      autoComplete={autoComplete}
+      style={{
+        background: "#eef0f8",
+        border: "none",
+        borderRadius: 999,
+        padding: "13px 22px",
+        fontSize: 14,
+        color: "#0f172a",
+        fontFamily: "'Inter', sans-serif",
+        outline: "none",
+        width: "100%",
+      }}
+    />
+    {note && <span style={{ fontSize: 11, color: "#94a3b8", paddingLeft: 8, fontFamily: "'Inter', sans-serif" }}>{note}</span>}
+  </div>
+);
+
+/* ── PILL PASSWORD ──────────────────────────────────────────── */
+const PillPassword = ({ label, value, onChange, placeholder, required, visible, onToggle, autoComplete }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    {label && (
+      <label style={{ fontSize: 13, fontWeight: 600, color: "#64748b", fontFamily: "'Inter', sans-serif" }}>
+        {label}{required && <span style={{ color: "#ef4444", marginLeft: 3 }}>*</span>}
       </label>
     )}
     <div style={{ position: "relative" }}>
@@ -31,40 +68,25 @@ const PasswordField = ({ label, value, onChange, placeholder, required, visible,
         required={required}
         autoComplete={autoComplete}
         style={{
-          background: "var(--bg3)",
-          border: "1px solid var(--border2)",
-          borderRadius: 8,
-          padding: "9px 54px 9px 13px",
-          color: "var(--text)",
-          fontSize: 13,
+          background: "#eef0f8",
+          border: "none",
+          borderRadius: 999,
+          padding: "13px 52px 13px 22px",
+          fontSize: 14,
+          color: "#0f172a",
+          fontFamily: "'Inter', sans-serif",
           outline: "none",
           width: "100%",
         }}
-        onFocus={(e) => { e.target.style.borderColor = "var(--accent)"; }}
-        onBlur={(e) => { e.target.style.borderColor = "var(--border2)"; }}
       />
       <button
         type="button"
         onClick={onToggle}
-        aria-label={`${visible ? "Hide" : "View"} ${label ? label.toLowerCase() : "password"}`}
-        aria-pressed={visible}
-        title={`${visible ? "Hide" : "View"} password`}
+        aria-label={`${visible ? "Hide" : "Show"} password`}
         style={{
-          position: "absolute",
-          right: 8,
-          top: "50%",
-          transform: "translateY(-50%)",
-          border: "1px solid rgba(15,23,42,.10)",
-          background: "rgba(255,255,255,.82)",
-          color: "var(--text2)",
-          borderRadius: 5,
-          width: 24,
-          height: 21,
-          padding: 0,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: "pointer",
+          position: "absolute", right: 18, top: "50%", transform: "translateY(-50%)",
+          border: "none", background: "none", color: "#94a3b8", cursor: "pointer",
+          display: "flex", alignItems: "center", padding: 0, lineHeight: 0,
         }}
       >
         <EyeIcon crossed={visible} />
@@ -73,19 +95,104 @@ const PasswordField = ({ label, value, onChange, placeholder, required, visible,
   </div>
 );
 
+/* ── RIGHT PANEL ────────────────────────────────────────────── */
+const RightPanel = ({ mode }) => {
+  const copy = mode === "register"
+    ? { title: "Run your media buying Smarter.", sub: "MPOs · Clients · Campaigns · Reports\nall in one place." }
+    : { title: "Run your media buying Smarter.", sub: "MPOs · Clients · Campaigns · Reports\nall in one place." };
 
+  return (
+    <div style={{
+      flex: "0 0 44%",
+      background: "linear-gradient(150deg, #f0a500 0%, #c97d00 100%)",
+      position: "relative",
+      overflow: "hidden",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "40px 28px",
+      gap: 20,
+    }}>
+      {/* Decorative blobs */}
+      <div style={{ position: "absolute", top: "-18%", right: "-12%", width: "65%", paddingTop: "65%", borderRadius: "50%", background: "rgba(255,255,255,.09)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", bottom: "-12%", left: "-18%", width: "70%", paddingTop: "70%", borderRadius: "50%", background: "rgba(255,255,255,.07)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", top: "38%", left: "5%", width: "40%", paddingTop: "40%", borderRadius: "50%", background: "rgba(255,255,255,.05)", pointerEvents: "none" }} />
+
+      {/* Copy */}
+      <div style={{ zIndex: 1, textAlign: "center" }}>
+        <h3 style={{
+          margin: "0 0 10px", color: "#fff",
+          fontFamily: "'Plus Jakarta Sans', sans-serif",
+          fontWeight: 900, fontSize: "clamp(22px, 2.4vw, 28px)", lineHeight: 1.2,
+        }}>
+          {copy.title}
+        </h3>
+        <p style={{
+          margin: 0, color: "rgba(255,255,255,.75)",
+          fontSize: 13, lineHeight: 1.65,
+          fontFamily: "'Inter', sans-serif", whiteSpace: "pre-line",
+        }}>
+          {copy.sub}
+        </p>
+      </div>
+
+      {/* Stat cards */}
+      <div style={{ zIndex: 1, width: "100%", maxWidth: 280, position: "relative" }}>
+        {/* Card 1 */}
+        <div style={{
+          background: "rgba(255,255,255,.18)",
+          backdropFilter: "blur(8px)",
+          borderRadius: 18,
+          padding: "18px 20px",
+          marginBottom: 0,
+          position: "relative",
+          zIndex: 2,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 16 }}>📋</span>
+            <span style={{ color: "#fff", fontWeight: 700, fontSize: 13, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Active MPOs</span>
+          </div>
+          <div style={{ color: "#fff", fontWeight: 900, fontSize: 40, lineHeight: 1, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>24</div>
+          <div style={{ color: "rgba(255,255,255,.65)", fontSize: 12, marginTop: 5, fontFamily: "'Inter', sans-serif" }}>across all clients</div>
+
+        </div>
+
+        {/* Card 2 — offset right */}
+        <div style={{
+          background: "rgba(255,255,255,.13)",
+          backdropFilter: "blur(8px)",
+          borderRadius: 18,
+          padding: "26px 20px 18px",
+          marginTop: 10,
+          marginLeft: 24,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 16 }}>✅</span>
+            <span style={{ color: "#fff", fontWeight: 700, fontSize: 13, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Execution Rate</span>
+          </div>
+          <div style={{ color: "#fff", fontWeight: 900, fontSize: 40, lineHeight: 1, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>99.99%</div>
+          {/* Progress segments */}
+          <div style={{ marginTop: 10, display: "flex", gap: 3 }}>
+            {Array.from({ length: 9 }).map((_, i) => (
+              <div key={i} style={{
+                flex: 1, height: 3, borderRadius: 99,
+                background: "rgba(255,255,255,.75)",
+              }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ── MAIN ───────────────────────────────────────────────────── */
 const AuthPage = ({ onLogin, sessionExpired = false }) => {
   const [mode, setMode] = useState("login");
   const [f, setF] = useState({
-    name: "",
-    email: "",
-    password: "",
-    agency: "",
-    agencyCode: "",
-    agencyMode: "create",
-    title: "",
-    phone: "",
-    confirm: "",
+    name: "", email: "", password: "", agency: "",
+    agencyCode: "", agencyMode: "create", title: "", phone: "", confirm: "",
   });
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
@@ -94,748 +201,453 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
   const [existingAgencyMatch, setExistingAgencyMatch] = useState(null);
   const [agencyCheckLoading, setAgencyCheckLoading] = useState(false);
   const [visiblePasswords, setVisiblePasswords] = useState({ password: false, confirm: false });
+  const [rememberMe, setRememberMe] = useState(false);
 
   const isRecoveryMode = mode === "recovery";
   const isRegisterMode = mode === "register";
-  const passwordLabel = useMemo(() => (isRecoveryMode ? "New Password" : "Password"), [isRecoveryMode]);
+
   const heading = useMemo(() => {
     if (mode === "login") return "Welcome back";
-    if (mode === "recovery") return "Create a new password";
-    return "Create your workspace account";
+    if (mode === "recovery") return "New password";
+    return "Create account";
   }, [mode]);
+
   const subheading = useMemo(() => {
-    if (mode === "login") return "Sign in to continue managing schedules, reports, and agency operations.";
-    if (mode === "recovery") return "Set a new password to regain secure access to your workspace.";
-    return "Register your profile, then create a new agency or join an existing one with an invite code.";
+    if (mode === "login") return "Sign in to continue to your workspace.";
+    if (mode === "recovery") return "Set a new password to regain access.";
+    return "Register your profile and set up your agency workspace.";
   }, [mode]);
 
-  const u = (k) => (v) => {
-    setErr("");
-    setInfo("");
-    setF((p) => ({ ...p, [k]: v }));
-  };
+  const passwordLabel = useMemo(() => isRecoveryMode ? "New Password" : "Password", [isRecoveryMode]);
 
-  const togglePasswordVisibility = (key) => {
-    setVisiblePasswords((p) => ({ ...p, [key]: !p[key] }));
-  };
+  const u = (k) => (v) => { setErr(""); setInfo(""); setF((p) => ({ ...p, [k]: v })); };
+  const togglePw = (key) => setVisiblePasswords((p) => ({ ...p, [key]: !p[key] }));
 
   useEffect(() => {
-    const previousHtmlBg = document.documentElement.style.backgroundColor;
-    const previousBodyBg = document.body.style.backgroundColor;
+    const prev = { html: document.documentElement.style.backgroundColor, body: document.body.style.backgroundColor };
     const root = document.getElementById("root");
-    const previousRootBg = root?.style.backgroundColor || "";
-    document.documentElement.style.backgroundColor = AUTH_BG;
-    document.body.style.backgroundColor = AUTH_BG;
-    if (root) root.style.backgroundColor = AUTH_BG;
-
+    const prevRoot = root?.style.backgroundColor || "";
+    const bg = "#eaedf5";
+    document.documentElement.style.backgroundColor = bg;
+    document.body.style.backgroundColor = bg;
+    if (root) root.style.backgroundColor = bg;
     return () => {
-      document.documentElement.style.backgroundColor = previousHtmlBg;
-      document.body.style.backgroundColor = previousBodyBg;
-      if (root) root.style.backgroundColor = previousRootBg;
+      document.documentElement.style.backgroundColor = prev.html;
+      document.body.style.backgroundColor = prev.body;
+      if (root) root.style.backgroundColor = prevRoot;
     };
   }, []);
 
   useEffect(() => {
     const hash = window.location.hash || "";
     const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
-    const type = params.get("type");
-    if (type === "recovery") {
-      setMode("recovery");
-      setErr("");
-      setInfo("Enter your new password to complete the reset.");
-    }
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setMode("recovery");
-        setErr("");
-        setInfo("Enter your new password to complete the reset.");
-      }
+    if (params.get("type") === "recovery") { setMode("recovery"); setInfo("Enter your new password to complete the reset."); }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") { setMode("recovery"); setInfo("Enter your new password to complete the reset."); }
     });
-
-    return () => {
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
     let active = true;
-    const checkAgency = async () => {
+    const check = async () => {
       if (mode !== "register" || f.agencyMode !== "create" || !f.agency.trim()) {
-        if (active) {
-          setExistingAgencyMatch(null);
-          setAgencyCheckLoading(false);
-        }
+        if (active) { setExistingAgencyMatch(null); setAgencyCheckLoading(false); }
         return;
       }
-
       setAgencyCheckLoading(true);
       try {
         const match = await findExistingAgencyByName(f.agency.trim());
         if (active) setExistingAgencyMatch(match || null);
-      } catch (error) {
-        console.error("Failed to validate agency name during signup:", error);
-        if (active) setExistingAgencyMatch(null);
-      } finally {
-        if (active) setAgencyCheckLoading(false);
-      }
+      } catch { if (active) setExistingAgencyMatch(null); }
+      finally { if (active) setAgencyCheckLoading(false); }
     };
-
-    const timer = setTimeout(checkAgency, 250);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
+    const t = setTimeout(check, 250);
+    return () => { active = false; clearTimeout(t); };
   }, [mode, f.agencyMode, f.agency]);
 
   const handleForgotPassword = async () => {
-    setErr("");
-    setInfo("");
-
-    if (!f.email.trim()) {
-      setErr("Enter your email address first, then click Forgot password.");
-      return;
-    }
-
+    setErr(""); setInfo("");
+    if (!f.email.trim()) { setErr("Enter your email first, then click Forgot password."); return; }
     setResetLoading(true);
-
     try {
       const redirectTo = `${window.location.origin}${window.location.pathname}`;
       const { error } = await supabase.auth.resetPasswordForEmail(f.email.trim(), { redirectTo });
       if (error) throw error;
+      setInfo("Reset email sent. Check your inbox.");
+    } catch (e) { setErr(e.message || "Failed to send reset email."); }
+    finally { setResetLoading(false); }
+  };
 
-      setInfo("Password reset email sent. Check your inbox and open the link to set a new password.");
-    } catch (e) {
-      setErr(e.message || "Failed to send password reset email.");
-    } finally {
-      setResetLoading(false);
-    }
+  const handleGoogleSignIn = async () => {
+    setErr("");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
+      if (error) throw error;
+    } catch (e) { setErr(e.message || "Google sign-in failed."); }
   };
 
   const submit = async () => {
-    setErr("");
-    setInfo("");
-
+    setErr(""); setInfo("");
     if (mode === "register") {
-      if (!f.name || !f.email || !f.password) {
-        return setErr("Full name, email, and password are required.");
-      }
-      if (f.agencyMode === "create" && !f.agency.trim()) {
-        return setErr("Agency name is required when creating a new agency.");
-      }
-      if (f.agencyMode === "create" && existingAgencyMatch) {
-        return setErr("Agency already existing contact admin.");
-      }
-      if (f.agencyMode === "join" && !normalizeAgencyCode(f.agencyCode)) {
-        return setErr("Agency invite code is required when joining an existing agency.");
-      }
-      if (f.password !== f.confirm) {
-        return setErr("Passwords do not match.");
-      }
-      if (f.password.length < 6) {
-        return setErr("Password must be at least 6 characters.");
-      }
+      if (!f.name || !f.email || !f.password) return setErr("Full name, email, and password are required.");
+      if (f.agencyMode === "create" && !f.agency.trim()) return setErr("Agency name is required.");
+      if (f.agencyMode === "create" && existingAgencyMatch) return setErr("Agency already exists — contact admin.");
+      if (f.agencyMode === "join" && !normalizeAgencyCode(f.agencyCode)) return setErr("Invite code is required.");
+      if (f.password !== f.confirm) return setErr("Passwords do not match.");
+      if (f.password.length < 6) return setErr("Password must be at least 6 characters.");
     }
-
     if (mode === "recovery") {
-      if (!f.password) {
-        return setErr("New password is required.");
-      }
-      if (f.password.length < 6) {
-        return setErr("Password must be at least 6 characters.");
-      }
-      if (f.password !== f.confirm) {
-        return setErr("Passwords do not match.");
-      }
+      if (!f.password) return setErr("New password is required.");
+      if (f.password.length < 6) return setErr("Password must be at least 6 characters.");
+      if (f.password !== f.confirm) return setErr("Passwords do not match.");
     }
-
     setLoading(true);
-
     try {
       if (mode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: f.email,
-          password: f.password,
-        });
-
+        const { error } = await supabase.auth.signInWithPassword({ email: f.email, password: f.password });
         if (error) throw error;
         if (typeof onLogin === "function") onLogin();
       } else if (mode === "recovery") {
-        const { error } = await supabase.auth.updateUser({
-          password: f.password,
-        });
-
+        const { error } = await supabase.auth.updateUser({ password: f.password });
         if (error) throw error;
-
-        setInfo("Password updated successfully. Sign in with your new password.");
+        setInfo("Password updated. Sign in with your new password.");
         setMode("login");
         setF((p) => ({ ...p, password: "", confirm: "" }));
         window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
       } else {
         const { data, error } = await supabase.auth.signUp({
-          email: f.email,
-          password: f.password,
-          options: {
-            data: {
-              full_name: f.name,
-              title: f.title || "",
-              phone: f.phone || "",
-              agency_name: f.agencyMode === "create" ? f.agency.trim() : "",
-              agency_code: f.agencyMode === "join" ? normalizeAgencyCode(f.agencyCode) : "",
-              agency_mode: f.agencyMode,
-            },
-          },
+          email: f.email, password: f.password,
+          options: { data: { full_name: f.name, title: f.title || "", phone: f.phone || "", agency_name: f.agencyMode === "create" ? f.agency.trim() : "", agency_code: f.agencyMode === "join" ? normalizeAgencyCode(f.agencyCode) : "", agency_mode: f.agencyMode } },
         });
-
         if (error) throw error;
-
-        if (!data.user) {
-          throw new Error("Signup failed. No user was returned.");
-        }
-
-        const { error: profileError } = await supabase
-          .from("profiles")
-          .update({
-            full_name: f.name,
-            title: f.title || "",
-            phone: f.phone || "",
-          })
-          .eq("id", data.user.id);
-
+        if (!data.user) throw new Error("Signup failed.");
+        const { error: profileError } = await supabase.from("profiles").update({ full_name: f.name, title: f.title || "", phone: f.phone || "" }).eq("id", data.user.id);
         if (profileError) throw profileError;
-
-        if (!data.session) {
-          setInfo("Account created. Check your email to confirm your account, then sign in to finish joining your agency.");
-          setMode("login");
-        }
+        if (!data.session) { setInfo("Account created! Check your email to confirm, then sign in."); setMode("login"); }
       }
-    } catch (e) {
-      setErr(e.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setErr(e.message || "Something went wrong."); }
+    finally { setLoading(false); }
   };
 
-  const switchMode = (nextMode) => {
-    setMode(nextMode);
-    setErr("");
-    setInfo("");
+  const switchMode = (next) => {
+    setMode(next); setErr(""); setInfo("");
     setVisiblePasswords({ password: false, confirm: false });
-    if (nextMode !== "register") {
-      setExistingAgencyMatch(null);
-      setAgencyCheckLoading(false);
-    }
-    if (nextMode === "login") {
-      setF((p) => ({ ...p, password: "", confirm: "" }));
-    }
+    if (next !== "register") { setExistingAgencyMatch(null); setAgencyCheckLoading(false); }
+    if (next === "login") setF((p) => ({ ...p, password: "", confirm: "" }));
   };
 
-  const lightAuthThemeVars = {
-    "--bg": AUTH_BG,
-    "--bg2": "#ffffff",
-    "--bg3": "#eef2ff",
-    "--text": "#0f172a",
-    "--text2": "#475569",
-    "--text3": "#64748b",
-    "--border": "rgba(15,23,42,.10)",
-    "--border2": "rgba(15,23,42,.14)",
-    "--accent": "#d97706",
-    "--accent2": "#7c3aed",
-    "--red": "#dc2626",
-    "--green": "#16a34a",
-    "--shadow": "0 20px 50px rgba(15,23,42,.10)",
+  const submitLabel = mode === "login" ? "Sign In"
+    : mode === "recovery" ? "Update Password"
+    : existingAgencyMatch && f.agencyMode === "create" ? "Agency Already Exists"
+    : "Create Account";
+
+  /* ── shared input style for inline inputs (agency/invite code) ── */
+  const pillInlineInput = {
+    background: "#eef0f8", border: "none", borderRadius: 999,
+    padding: "13px 22px", fontSize: 14, color: "#0f172a",
+    fontFamily: "'Inter', sans-serif", outline: "none", width: "100%",
   };
 
   return (
-    <div
-      style={{
-        ...lightAuthThemeVars,
-        minHeight: "100vh",
-        width: "100%",
-        background: AUTH_BG,
-        color: "var(--text)",
-        padding: "clamp(72px, 10vw, 112px) clamp(24px, 5vw, 40px) clamp(96px, 12vw, 140px)",
-        boxSizing: "border-box",
+    <div style={{
+      minHeight: "100vh", width: "100%",
+      background: "#eaedf5",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "32px 20px", boxSizing: "border-box",
+    }}>
+      <div style={{
+        width: "100%", maxWidth: 900,
+        borderRadius: 26,
+        overflow: "hidden",
         display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-      }}
-    >
-      <section
-        style={{
-          width: "100%",
-          maxWidth: 468,
-          margin: "0 auto",
-          paddingBottom: 24,
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            borderRadius: 28,
-            background: "#ffffff",
-            border: "1px solid rgba(15,23,42,.08)",
-            boxShadow: "0 25px 70px rgba(15,23,42,.10)",
-            padding: "clamp(28px, 3.5vw, 36px)",
-          }}
-        >
+        background: "#fff",
+        boxShadow: "0 24px 64px rgba(100,100,160,.14)",
+        minHeight: 560,
+      }}>
+        {/* ── LEFT PANEL ── */}
+        <div style={{
+          flex: 1,
+          background: "#fff",
+          padding: "40px 48px 32px",
+          display: "flex",
+          flexDirection: "column",
+          overflowY: "auto",
+          maxHeight: "92vh",
+        }}>
+          {/* Logo pill */}
+          <div style={{ marginBottom: 32, alignSelf: "flex-start" }}>
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 8,
+              border: "1.5px solid #e2e8f0", borderRadius: 999,
+              padding: "7px 16px 7px 7px", background: "#fff",
+            }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: "50%",
+                background: "#f0a500",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 14, lineHeight: 1, flexShrink: 0,
+              }}>
+                📡
+              </div>
+              <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
+                MediaDesk Pro
+              </span>
+            </div>
+          </div>
+
+          {/* Session expired */}
           {sessionExpired && (
-            <div
-              style={{
-                background: "rgba(217,119,6,.10)",
-                border: "1px solid rgba(217,119,6,.30)",
-                borderRadius: 12,
-                padding: "11px 14px",
-                marginBottom: 16,
-                fontSize: 13,
-                color: "#92400e",
-                lineHeight: 1.5,
-              }}
-            >
+            <div style={{ background: "rgba(240,165,0,.08)", border: "1px solid rgba(240,165,0,.3)", borderRadius: 12, padding: "11px 16px", marginBottom: 20, fontSize: 13, color: "#92610a", lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
               Your session expired. Sign in again to continue.
             </div>
           )}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              textAlign: "center",
-              marginBottom: 22,
-            }}
-          >
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 16,
-                padding: "16px 22px",
-                borderRadius: 22,
-                background: "#ffffff",
-                border: "1px solid rgba(15,23,42,.08)",
-                boxShadow: "0 12px 30px rgba(15,23,42,.05)",
-                marginBottom: 18,
-                width: "100%",
-                maxWidth: 440,
-                justifyContent: "flex-start",
-              }}
-            >
-              <div
-                style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: 14,
-                  background: "#d97706",
-                  color: "#ffffff",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 26,
-                  lineHeight: 1,
-                  flexShrink: 0,
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,.18)",
-                }}
-              >
-                📡
-              </div>
-              <div style={{ textAlign: "left", minWidth: 0 }}>
-                <div
-                  style={{
-                    fontFamily: "'Syne',sans-serif",
-                    fontWeight: 800,
-                    fontSize: 18,
-                    letterSpacing: "-.03em",
-                    lineHeight: 1.05,
-                    color: "#0f172a",
-                  }}
-                >
-                  MediaDesk Pro
-                </div>
-                <div
-                  style={{
-                    marginTop: 8,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    letterSpacing: ".08em",
-                    textTransform: "uppercase",
-                    color: "#64748b",
-                  }}
-                >
-                  Media Schedule Platform
-                </div>
-              </div>
-            </div>
 
-            <h2
-              style={{
-                margin: 0,
-                maxWidth: 320,
-                fontFamily: "'Syne',sans-serif",
-                fontWeight: 800,
-                fontSize: 20,
-                lineHeight: 1.15,
-                letterSpacing: "-.03em",
-                textAlign: "center",
-              }}
-            >
-              {heading}
-            </h2>
-            <p
-              style={{
-                margin: "10px 0 0",
-                maxWidth: 340,
-                color: "var(--text2)",
-                fontSize: 14,
-                lineHeight: 1.6,
-                textAlign: "center",
-              }}
-            >
-              {subheading}
-            </p>
-          </div>
+          {/* Heading */}
+          <h2 style={{ margin: "0 0 6px", fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 900, fontSize: "clamp(26px, 3vw, 34px)", color: "#0f172a", letterSpacing: "-.03em", lineHeight: 1.1 }}>
+            {heading}
+          </h2>
+          <p style={{ margin: "0 0 26px", color: "#94a3b8", fontSize: 14, lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
+            {subheading}
+          </p>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-              gap: 10,
-              marginBottom: 18,
-            }}
-          >
-            {[
-              { key: "login", label: "Sign In" },
-              { key: "register", label: "Register" },
-            ].map((item) => {
-              const active = mode === item.key;
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => switchMode(item.key)}
-                  style={{
-                    border: active ? "1px solid rgba(124,58,237,.32)" : "1px solid rgba(15,23,42,.08)",
-                    background: active ? "linear-gradient(135deg, rgba(124,58,237,.10), rgba(217,119,6,.08))" : "rgba(248,250,252,.85)",
-                    color: active ? "#5b21b6" : "var(--text2)",
-                    borderRadius: 14,
-                    padding: "12px 10px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    transition: "all .2s ease",
-                  }}
-                >
-                  {item.label}
-                </button>
-              );
-            })}
-          </div>
+          {/* Form */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, flex: 1 }}>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingInline: 2 }}>
+            {/* Register-only fields */}
             {isRegisterMode && (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <Field
-                    label="Full Name"
-                    value={f.name}
-                    onChange={u("name")}
-                    placeholder="Jane Okafor"
-                    required
-                  />
-                  <Field
-                    label="Job Title"
-                    value={f.title}
-                    onChange={u("title")}
-                    placeholder="Media Buyer"
-                  />
+                  <PillInput label="Full Name" value={f.name} onChange={u("name")} placeholder="Jane Okafor" required />
+                  <PillInput label="Job Title" value={f.title} onChange={u("title")} placeholder="Media Buyer" />
                 </div>
 
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 10,
-                    padding: 8,
-                    borderRadius: 16,
-                    background: "rgba(15,23,42,.03)",
-                    border: "1px solid rgba(15,23,42,.06)",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setErr("");
-                      setInfo("");
-                      setExistingAgencyMatch(null);
-                      setF((p) => ({ ...p, agencyMode: "create", agencyCode: p.agencyCode || "" }));
-                    }}
-                    style={{
-                      padding: "13px 12px",
-                      borderRadius: 14,
-                      border: f.agencyMode === "create" ? "1px solid rgba(217,119,6,.28)" : "1px solid transparent",
-                      background: f.agencyMode === "create" ? "rgba(217,119,6,.10)" : "transparent",
-                      color: f.agencyMode === "create" ? "#b45309" : "var(--text2)",
-                      cursor: "pointer",
-                      fontWeight: 700,
-                    }}
-                  >
-                    Create New Agency
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setErr("");
-                      setInfo("");
-                      setF((p) => ({ ...p, agencyMode: "join", agency: p.agency || "" }));
-                    }}
-                    style={{
-                      padding: "13px 12px",
-                      borderRadius: 14,
-                      border: f.agencyMode === "join" ? "1px solid rgba(124,58,237,.24)" : "1px solid transparent",
-                      background: f.agencyMode === "join" ? "rgba(124,58,237,.08)" : "transparent",
-                      color: f.agencyMode === "join" ? "#6d28d9" : "var(--text2)",
-                      cursor: "pointer",
-                      fontWeight: 700,
-                    }}
-                  >
-                    Join With Invite Code
-                  </button>
+                {/* Agency mode */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, background: "#f5f7fc", borderRadius: 999, padding: 4 }}>
+                  {[
+                    { key: "create", label: "New Agency" },
+                    { key: "join", label: "Join With Code" },
+                  ].map((opt) => {
+                    const active = f.agencyMode === opt.key;
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() => { setErr(""); setInfo(""); if (opt.key === "create") setExistingAgencyMatch(null); setF((p) => ({ ...p, agencyMode: opt.key })); }}
+                        style={{
+                          border: "none",
+                          background: active ? "#f0a500" : "transparent",
+                          color: active ? "#000" : "#64748b",
+                          borderRadius: 999,
+                          padding: "9px 12px",
+                          fontWeight: 700, fontSize: 12,
+                          cursor: "pointer",
+                          transition: "all .18s",
+                          fontFamily: "'Plus Jakarta Sans', sans-serif",
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {f.agencyMode === "create" ? (
-                  <>
-                    <Field
-                      label="Agency Name"
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <label style={{ fontSize: 13, fontWeight: 600, color: "#64748b", fontFamily: "'Inter', sans-serif" }}>
+                      Agency Name <span style={{ color: "#ef4444" }}>*</span>
+                    </label>
+                    <input
+                      type="text"
                       value={f.agency}
-                      onChange={(value) => {
-                        setErr("");
-                        setInfo("");
-                        u("agency")(value);
-                      }}
+                      onChange={(e) => { setErr(""); setInfo(""); u("agency")(e.target.value); }}
                       placeholder="Apex Media Ltd"
-                      required
-                      note={agencyCheckLoading ? "Checking whether this agency already exists..." : "Only use this when creating a brand-new workspace."}
+                      style={pillInlineInput}
                     />
-                    {existingAgencyMatch ? (
-                      <div
-                        style={{
-                          background: "rgba(239,68,68,.07)",
-                          border: "1px solid rgba(239,68,68,.24)",
-                          borderRadius: 16,
-                          padding: "13px 14px",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 8,
-                        }}
-                      >
-                        <div style={{ fontSize: 11, color: "var(--red)", fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em" }}>
-                          Agency already exists
-                        </div>
-                        <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
-                          <strong style={{ color: "var(--text)" }}>{existingAgencyMatch.name}</strong> already has a workspace. Contact your admin for access instead of creating another agency.
-                        </div>
+                    <span style={{ fontSize: 11, color: "#94a3b8", paddingLeft: 8, fontFamily: "'Inter', sans-serif" }}>
+                      {agencyCheckLoading ? "Checking…" : "Only for brand-new workspaces."}
+                    </span>
+                    {existingAgencyMatch && (
+                      <div style={{ background: "rgba(239,68,68,.06)", border: "1px solid rgba(239,68,68,.2)", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "#dc2626", lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
+                        <strong>{existingAgencyMatch.name}</strong> already exists. Contact your admin instead.
                       </div>
-                    ) : null}
-                  </>
+                    )}
+                  </div>
                 ) : (
-                  <Field
-                    label="Agency Invite Code"
-                    value={f.agencyCode}
-                    onChange={(value) => {
-                      setErr("");
-                      setInfo("");
-                      u("agencyCode")(value);
-                    }}
-                    placeholder="QVT-7K4P"
-                    required
-                    note="Ask your agency admin for the invite code."
-                  />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <label style={{ fontSize: 13, fontWeight: 600, color: "#64748b", fontFamily: "'Inter', sans-serif" }}>
+                      Invite Code <span style={{ color: "#ef4444" }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={f.agencyCode}
+                      onChange={(e) => { setErr(""); setInfo(""); u("agencyCode")(e.target.value); }}
+                      placeholder="QVT-7K4P"
+                      style={pillInlineInput}
+                    />
+                    <span style={{ fontSize: 11, color: "#94a3b8", paddingLeft: 8, fontFamily: "'Inter', sans-serif" }}>Ask your agency admin for the code.</span>
+                  </div>
                 )}
 
-                <Field
-                  label="Phone Number"
-                  type="tel"
-                  value={f.phone}
-                  onChange={u("phone")}
-                  placeholder="+234 800 000 0000"
-                />
+                <PillInput label="Phone" type="tel" value={f.phone} onChange={u("phone")} placeholder="+234 800 000 0000" />
               </>
             )}
 
-            <Field
+            {/* Email */}
+            <PillInput
               label="Email"
               type="email"
               value={f.email}
               onChange={u("email")}
-              placeholder="you@agency.com"
+              placeholder="Enter your email"
               required
+              autoComplete="email"
             />
 
-            <PasswordField
+            {/* Password */}
+            <PillPassword
               label={passwordLabel}
               value={f.password}
               onChange={u("password")}
               visible={visiblePasswords.password}
-              onToggle={() => togglePasswordVisibility("password")}
+              onToggle={() => togglePw("password")}
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               placeholder="••••••••"
               required
             />
 
             {(isRegisterMode || isRecoveryMode) && (
-              <PasswordField
+              <PillPassword
                 label="Confirm Password"
                 value={f.confirm}
                 onChange={u("confirm")}
                 visible={visiblePasswords.confirm}
-                onToggle={() => togglePasswordVisibility("confirm")}
+                onToggle={() => togglePw("confirm")}
                 autoComplete="new-password"
                 placeholder="••••••••"
               />
             )}
 
-            {mode === "recovery" && (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: -2 }}>
-                <div style={{ fontSize: 12, color: "var(--text3)" }}>Open the reset link from your email, then set your new password here.</div>
-                <button
-                  type="button"
-                  onClick={() => switchMode("login")}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#7c3aed",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    fontSize: 12,
-                    padding: 0,
-                  }}
-                >
-                  Back to sign in
-                </button>
-              </div>
-            )}
-
+            {/* Login: remember + forgot */}
             {mode === "login" && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: -2 }}>
-                <div style={{ fontSize: 11, color: "var(--text3)" }}>Use the email linked to your agency workspace.</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#64748b", cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+                  <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} style={{ accentColor: "#f0a500", width: 14, height: 14 }} />
+                  Remember me
+                </label>
                 <button
                   type="button"
                   onClick={handleForgotPassword}
                   disabled={resetLoading || loading}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#7c3aed",
-                    fontWeight: 700,
-                    cursor: resetLoading || loading ? "wait" : "pointer",
-                    fontSize: 11,
-                    padding: 0,
-                  }}
+                  style={{ background: "none", border: "none", color: "#f0a500", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 0 }}
                 >
-                  {resetLoading ? "Sending reset link..." : "Forgot password?"}
+                  {resetLoading ? "Sending…" : "Forgot password?"}
                 </button>
               </div>
             )}
 
-            {info && (
-              <div
-                style={{
-                  background: "rgba(34,197,94,.10)",
-                  border: "1px solid rgba(34,197,94,.24)",
-                  borderRadius: 16,
-                  padding: "12px 14px",
-                  color: "#166534",
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                }}
+            {/* Recovery back link */}
+            {isRecoveryMode && (
+              <button
+                type="button"
+                onClick={() => switchMode("login")}
+                style={{ background: "none", border: "none", color: "#f0a500", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 0, textAlign: "left" }}
               >
+                ← Back to sign in
+              </button>
+            )}
+
+            {/* Banners */}
+            {info && (
+              <div style={{ background: "rgba(34,197,94,.07)", border: "1px solid rgba(34,197,94,.2)", borderRadius: 12, padding: "11px 16px", color: "#166534", fontSize: 13, lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
                 {info}
               </div>
             )}
-
             {err && (
-              <div
-                style={{
-                  background: "rgba(239,68,68,.08)",
-                  border: "1px solid rgba(239,68,68,.24)",
-                  borderRadius: 16,
-                  padding: "12px 14px",
-                  color: "var(--red)",
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                }}
-              >
+              <div style={{ background: "rgba(239,68,68,.06)", border: "1px solid rgba(239,68,68,.2)", borderRadius: 12, padding: "11px 16px", color: "#dc2626", fontSize: 13, lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
                 {err}
               </div>
             )}
 
-            <Btn
-              size="lg"
+            {/* Primary CTA */}
+            <button
+              type="button"
               onClick={submit}
-              loading={loading || (mode === "register" && f.agencyMode === "create" && agencyCheckLoading)}
-              disabled={mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch}
+              disabled={loading || (mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch)}
               style={{
                 width: "100%",
-                justifyContent: "center",
-                marginTop: 6,
-                minHeight: 52,
-                borderRadius: 16,
+                background: loading ? "rgba(240,165,0,.55)" : "#f0a500",
+                color: "#000",
+                border: "none",
+                borderRadius: 999,
+                padding: "15px 20px",
+                fontSize: 15,
                 fontWeight: 800,
-                letterSpacing: ".01em",
-              }}
-            >
-              {mode === "login"
-                ? "Sign In"
-                : mode === "recovery"
-                  ? "Update Password"
-                  : existingAgencyMatch && f.agencyMode === "create"
-                    ? "Already Existing Contact Admin"
-                    : "Create Account"}
-            </Btn>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr auto 1fr",
+                cursor: loading ? "wait" : "pointer",
+                display: "flex",
                 alignItems: "center",
-                gap: 12,
+                justifyContent: "center",
+                gap: 8,
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+                opacity: (mode === "register" && f.agencyMode === "create" && !!existingAgencyMatch) ? 0.5 : 1,
+                transition: "opacity .18s, background .18s",
                 marginTop: 4,
-                color: "var(--text3)",
-                fontSize: 11,
               }}
             >
-              <span style={{ height: 1, background: "rgba(15,23,42,.08)" }} />
-              <span>Quick switch</span>
-              <span style={{ height: 1, background: "rgba(15,23,42,.08)" }} />
-            </div>
+              {loading && <span style={{ animation: "spin 1s linear infinite", display: "inline-block", fontSize: 14 }}>⟳</span>}
+              {submitLabel}
+            </button>
 
-            <p style={{ textAlign: "center", color: "var(--text2)", fontSize: 13, margin: 0 }}>
-              {mode === "login" ? "No account yet? " : mode === "recovery" ? "Back to " : "Already have an account? "}
+            {/* Google sign-in */}
+            {mode === "login" && (
               <button
                 type="button"
-                onClick={() => {
-                  if (mode === "login") {
-                    switchMode("register");
-                  } else {
-                    switchMode("login");
-                  }
-                }}
+                onClick={handleGoogleSignIn}
                 style={{
-                  background: "none",
-                  border: "none",
-                  color: "#7c3aed",
-                  fontWeight: 800,
+                  width: "100%",
+                  background: "#fff",
+                  color: "#0f172a",
+                  border: "1.5px solid #e2e8f0",
+                  borderRadius: 999,
+                  padding: "13px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
                   cursor: "pointer",
-                  fontSize: 13,
-                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 10,
+                  fontFamily: "'Plus Jakarta Sans', sans-serif",
+                  transition: "background .18s",
                 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#f8fafc"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "#fff"; }}
               >
-                {mode === "login" ? "Register" : "Sign In"}
+                <GoogleIcon />
+                Sign In with Google
               </button>
-            </p>
+            )}
+
+            {/* Footer row */}
+            <div style={{ marginTop: "auto", borderTop: "1px solid #f1f5f9", paddingTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <span style={{ color: "#94a3b8", fontSize: 13, fontFamily: "'Inter', sans-serif" }}>
+                {mode === "login" ? "Don't have an account? " : mode === "recovery" ? "Back to " : "Already have an account? "}
+                <button
+                  type="button"
+                  onClick={() => switchMode(mode === "login" ? "register" : "login")}
+                  style={{ background: "none", border: "none", color: "#f0a500", fontWeight: 700, fontSize: 13, cursor: "pointer", padding: 0, fontFamily: "'Inter', sans-serif" }}
+                >
+                  {mode === "login" ? "Sign up" : "Sign In"}
+                </button>
+              </span>
+              <span style={{ color: "#c0c8d8", fontSize: 13, fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap" }}>Terms &amp; Privacy</span>
+            </div>
           </div>
         </div>
-      </section>
+
+        {/* ── RIGHT PANEL ── */}
+        <RightPanel mode={mode} />
+      </div>
     </div>
   );
 };
