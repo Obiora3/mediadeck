@@ -4,7 +4,7 @@ import Empty from "../components/Empty";
 import Toast from "../components/Toast";
 import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
-import { activeOnly, archivedOnly, isArchived, pctWithin } from "../utils/records";
+import { activeOnly, archivedOnly, isArchived, pctWithin, archiveRecord, restoreRecord } from "../utils/records";
 import { fmtN } from "../utils/formatters";
 import { hasPermission, readOnlyMessage, isAdmin, adminOnlyMessage } from "../constants/roles";
 import { createRatesInSupabase, updateRateInSupabase, archiveRateInSupabase, restoreRateInSupabase, importRatesInSupabase, deleteRateInSupabase } from "../services/rates";
@@ -332,6 +332,25 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
     const rate = parseFloat(r.ratePerSpot) || 0;
     return rate * (1 - (parseFloat(disc) || 0) / 100) * (1 - (parseFloat(comm) || 0) / 100);
   };
+  const makeOptimisticRate = (row, id, previous = null) => ({
+    ...(previous || {}),
+    id,
+    vendorId: hdr.vendorId,
+    mediaType: hdr.mediaType || "",
+    programme: row.programme || "",
+    timeBelt: row.timeBelt || "",
+    duration: row.duration || "30",
+    ratePerSpot: row.ratePerSpot || "",
+    discount: hdr.discount || "",
+    commission: hdr.commission || "",
+    vat: previous?.vat ?? "0",
+    notes: hdr.notes || "",
+    campaignId: previous?.campaignId || "",
+    clientId: previous?.clientId || "",
+    archivedAt: previous?.archivedAt || null,
+    createdAt: previous?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  });
 
   const openAdd = () => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
@@ -385,62 +404,82 @@ const RatesPage = ({ rates, setRates, vendors, setVendors, clients, campaigns, u
       });
     }
 
-    try {
-      if (modal === "edit" && editId) {
-        const row = validRows[0];
-        const updatedRate = await updateRateInSupabase(editId, hdr, row);
-        setRates(v => v.map(x => x.id === editId ? updatedRate : x));
-        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: editId, action: "updated", actor: user, metadata: { vendorId: updatedRate.vendorId || hdr.vendorId || "", programme: updatedRate.programme || row.programme || "" } }).catch(error => console.error("Failed to write audit event:", error));
-        setToast({ msg: "Rate updated.", type: "success" });
-      } else {
-        const createdRates = await createRatesInSupabase(user.agencyId, user.id, hdr, validRows);
-        setRates(v => [...createdRates, ...v]);
-        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: null, action: "created", actor: user, note: `${createdRates.length} rate card${createdRates.length !== 1 ? "s" : ""} added.`, metadata: { count: createdRates.length, vendorId: hdr.vendorId || "" } }).catch(error => console.error("Failed to write audit event:", error));
-        setToast({ msg: `${createdRates.length} rate card${createdRates.length !== 1 ? "s" : ""} added.`, type: "success" });
-      }
+    if (modal === "edit" && editId) {
+      const row = validRows[0];
+      const previous = rates.find(item => item.id === editId);
+      const optimistic = makeOptimisticRate(row, editId, previous);
+      setRates(items => items.map(item => item.id === editId ? optimistic : item));
+      setToast({ msg: "Rate updated.", type: "success" });
       setModal(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to save rate.", type: "error" });
+      updateRateInSupabase(editId, hdr, row).then(updatedRate => {
+        setRates(items => items.map(item => item.id === editId ? updatedRate : item));
+        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: editId, action: "updated", actor: user, metadata: { vendorId: updatedRate.vendorId || hdr.vendorId || "", programme: updatedRate.programme || row.programme || "" } }).catch(error => console.error("Failed to write audit event:", error));
+      }).catch(e => {
+        if (previous) setRates(items => items.map(item => item.id === editId ? previous : item));
+        setToast({ msg: e.message || "Failed to save rate. The local change was rolled back.", type: "error" });
+      });
+      return;
     }
+
+    const stamp = Date.now();
+    const optimisticRates = validRows.map((row, index) => makeOptimisticRate(row, `temp_rate_${stamp}_${index}`));
+    const optimisticIds = new Set(optimisticRates.map(rate => rate.id));
+    setRates(items => [...optimisticRates, ...items]);
+    setToast({ msg: `${optimisticRates.length} rate card${optimisticRates.length !== 1 ? "s" : ""} added.`, type: "success" });
+    setModal(null);
+
+    createRatesInSupabase(user.agencyId, user.id, hdr, validRows).then(createdRates => {
+      const createdIds = new Set(createdRates.map(rate => rate.id));
+      setRates(items => [...createdRates, ...items.filter(item => !optimisticIds.has(item.id) && !createdIds.has(item.id))]);
+      createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: null, action: "created", actor: user, note: `${createdRates.length} rate card${createdRates.length !== 1 ? "s" : ""} added.`, metadata: { count: createdRates.length, vendorId: hdr.vendorId || "" } }).catch(error => console.error("Failed to write audit event:", error));
+    }).catch(e => {
+      setRates(items => items.filter(item => !optimisticIds.has(item.id)));
+      setToast({ msg: e.message || "Failed to save rate. The local change was rolled back.", type: "error" });
+    });
   };
 
   const del = async id => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const archived = await archiveRateInSupabase(id);
-      setRates(v => v.map(x => x.id === id ? archived : x));
+    const previous = rates.find(item => item.id === id);
+    if (previous) setRates(items => items.map(item => item.id === id ? archiveRecord(item, user) : item));
+    setToast({ msg: "Rate card archived.", type: "success" });
+    setConfirm(null);
+
+    archiveRateInSupabase(id).then(archived => {
+      setRates(items => items.map(item => item.id === id ? archived : item));
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: id, action: "archived", actor: user, metadata: { programme: archived.programme || "", vendorId: archived.vendorId || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Rate card archived.", type: "success" });
-      setConfirm(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to archive rate.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setRates(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to archive rate. The local change was rolled back.", type: "error" });
+    });
   };
   const restore = async id => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const restored = await restoreRateInSupabase(id);
-      setRates(v => v.map(x => x.id === id ? restored : x));
+    const previous = rates.find(item => item.id === id);
+    if (previous) setRates(items => items.map(item => item.id === id ? restoreRecord(item) : item));
+    setToast({ msg: "Rate card restored.", type: "success" });
+
+    restoreRateInSupabase(id).then(restored => {
+      setRates(items => items.map(item => item.id === id ? restored : item));
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: id, action: "restored", actor: user, metadata: { programme: restored.programme || "", vendorId: restored.vendorId || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Rate card restored.", type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to restore rate.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setRates(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to restore rate. The local change was rolled back.", type: "error" });
+    });
   };
   const hardDelete = async id => {
     if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
-    try {
-      const target = rates.find(x => x.id === id);
-      await deleteRateInSupabase(id);
-      setRates(v => v.filter(x => x.id !== id));
+    const target = rates.find(x => x.id === id);
+    setRates(items => items.filter(item => item.id !== id));
+    setToast({ msg: "Rate card deleted permanently.", type: "success" });
+    setConfirm(null);
+
+    deleteRateInSupabase(id).then(() => {
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "rate", recordId: id, action: "deleted", actor: user, metadata: { programme: target?.programme || "", vendorId: target?.vendorId || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Rate card deleted permanently.", type: "success" });
-      setConfirm(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to delete rate.", type: "error" });
-    }
+    }).catch(e => {
+      if (target) setRates(items => [target, ...items.filter(item => item.id !== id)]);
+      setToast({ msg: e.message || "Failed to delete rate. The local change was rolled back.", type: "error" });
+    });
   };
 
   const handleExcelImport = async (newRates) => {

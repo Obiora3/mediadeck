@@ -638,6 +638,7 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
                       { value: "workspace", label: "Workspace Settings" },
                       { value: "profile", label: "Profiles" },
                       { value: "security", label: "Security" },
+                      { value: "auth", label: "Auth & Sessions" },
                     ]} />
                   </div>
                 </div>

@@ -4,7 +4,7 @@ import Empty from "../components/Empty";
 import Toast from "../components/Toast";
 import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
-import { activeOnly, archivedOnly, isArchived } from "../utils/records";
+import { activeOnly, archivedOnly, isArchived, archiveRecord, restoreRecord } from "../utils/records";
 import { hasPermission, readOnlyMessage, formatRoleLabel, isAdmin, adminOnlyMessage } from "../constants/roles";
 import { createClientInSupabase, updateClientInSupabase, archiveClientInSupabase, restoreClientInSupabase, deleteClientInSupabase } from "../services/clients";
 import { createAuditEventInSupabase } from "../services/notifications";
@@ -23,60 +23,88 @@ const ClientsPage = ({ clients, setClients, user }) => {
     if (!f.name) return setToast({ msg: "Client name required.", type: "error" });
     const duplicate = clients.find(c => c.id !== modal?.id && !isArchived(c) && c.name.trim().toLowerCase() === f.name.trim().toLowerCase());
     if (duplicate) return setToast({ msg: "A client with this name already exists.", type: "error" });
-    try {
-      if (modal === "add") {
-        const newClient = await createClientInSupabase(user.agencyId, user.id, f);
-        setClients(v => [newClient, ...v]);
-        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "client", recordId: newClient.id, action: "created", actor: user, metadata: { name: newClient.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      } else {
-        const updatedClient = await updateClientInSupabase(modal.id, f);
-        setClients(v => v.map(x => x.id === modal.id ? updatedClient : x));
-        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "client", recordId: modal.id, action: "updated", actor: user, metadata: { name: updatedClient.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      }
-      setToast({ msg: modal === "add" ? "Client added." : "Client updated.", type: "success" });
-      setModal(null);
-      setF(blank);
-    } catch (e) {
+
+    const isAdding = modal === "add";
+    const modalId = isAdding ? null : modal.id;
+    const previous = modalId ? clients.find(item => item.id === modalId) : null;
+    const optimistic = {
+      ...(previous || {}),
+      ...f,
+      id: isAdding ? `temp_client_${Date.now()}` : modalId,
+      createdAt: previous?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      archivedAt: previous?.archivedAt || null,
+    };
+
+    setClients(items => isAdding ? [optimistic, ...items] : items.map(item => item.id === modalId ? optimistic : item));
+    setToast({ msg: isAdding ? "Client added." : "Client updated.", type: "success" });
+    setModal(null);
+    setF(blank);
+
+    const task = isAdding
+      ? createClientInSupabase(user.agencyId, user.id, f)
+      : updateClientInSupabase(modalId, f);
+
+    task.then(savedClient => {
+      setClients(items => isAdding
+        ? [savedClient, ...items.filter(item => item.id !== optimistic.id && item.id !== savedClient.id)]
+        : items.map(item => item.id === modalId ? savedClient : item));
+      createAuditEventInSupabase({
+        agencyId: user.agencyId,
+        recordType: "client",
+        recordId: savedClient.id || modalId,
+        action: isAdding ? "created" : "updated",
+        actor: user,
+        metadata: { name: savedClient.name || "" },
+      }).catch(error => console.error("Failed to write audit event:", error));
+    }).catch(e => {
+      if (isAdding) setClients(items => items.filter(item => item.id !== optimistic.id));
+      else if (previous) setClients(items => items.map(item => item.id === modalId ? previous : item));
       setToast({ msg: e.message || "Failed to save client.", type: "error" });
-    }
+    });
   };
   const del = async id => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const archivedClient = await archiveClientInSupabase(id);
-      setClients(v => v.map(x => x.id === id ? archivedClient : x));
+    const previous = clients.find(item => item.id === id);
+    if (previous) setClients(items => items.map(item => item.id === id ? archiveRecord(item, user) : item));
+    setToast({ msg: "Client archived.", type: "success" });
+    setConfirm(null);
+
+    archiveClientInSupabase(id).then(archivedClient => {
+      setClients(items => items.map(item => item.id === id ? archivedClient : item));
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "client", recordId: id, action: "archived", actor: user, metadata: { name: archivedClient.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Client archived.", type: "success" });
-      setConfirm(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to archive client.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setClients(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to archive client. The local change was rolled back.", type: "error" });
+    });
   };
   const restore = async id => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const restoredClient = await restoreClientInSupabase(id);
-      setClients(v => v.map(x => x.id === id ? restoredClient : x));
+    const previous = clients.find(item => item.id === id);
+    if (previous) setClients(items => items.map(item => item.id === id ? restoreRecord(item) : item));
+    setToast({ msg: "Client restored.", type: "success" });
+
+    restoreClientInSupabase(id).then(restoredClient => {
+      setClients(items => items.map(item => item.id === id ? restoredClient : item));
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "client", recordId: id, action: "restored", actor: user, metadata: { name: restoredClient.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Client restored.", type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to restore client.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setClients(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to restore client. The local change was rolled back.", type: "error" });
+    });
   };
   const hardDelete = async id => {
     if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
-    try {
-      const target = clients.find(x => x.id === id);
-      await deleteClientInSupabase(id);
-      setClients(v => v.filter(x => x.id !== id));
+    const target = clients.find(x => x.id === id);
+    setClients(items => items.filter(item => item.id !== id));
+    setToast({ msg: "Client deleted permanently.", type: "success" });
+    setConfirm(null);
+
+    deleteClientInSupabase(id).then(() => {
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "client", recordId: id, action: "deleted", actor: user, metadata: { name: target?.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Client deleted permanently.", type: "success" });
-      setConfirm(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to delete client.", type: "error" });
-    }
+    }).catch(e => {
+      if (target) setClients(items => [target, ...items.filter(item => item.id !== id)]);
+      setToast({ msg: e.message || "Failed to delete client. The local change was rolled back.", type: "error" });
+    });
   };
   const visible = viewMode === "archived" ? archivedOnly(clients) : viewMode === "all" ? clients : activeOnly(clients);
   const filtered = visible.filter(c => `${c.name} ${c.industry}`.toLowerCase().includes(search.toLowerCase()));

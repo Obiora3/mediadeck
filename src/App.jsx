@@ -23,6 +23,8 @@ import MPOPage from "./pages/MPOPage";
 import PrintPreview from "./components/mpo/PrintPreview";
 import { buildCSV } from "./utils/export";
 import { themeKeyForUser, setStoredUserSignature, getDefaultTheme } from "./utils/session";
+import { recordAuthDiagnostic, summarizeAuthSession, flushAuthDiagnosticsToAudit } from "./utils/authDiagnostics";
+import { hydrateWorkspaceFromCache, setCachedWorkspaceSlice } from "./utils/workspaceCache";
 import { activeOnly, archivedOnly, isArchived, archiveRecord, restoreRecord, pctWithin } from "./utils/records";
 import { fmt, fmtN } from "./utils/formatters";
 import {
@@ -264,6 +266,7 @@ export default function App() {
       const next = typeof value === "function" ? value(prev) : value;
       store.set("msp_app_settings", next);
       if (user?.agencyId) {
+        setCachedWorkspaceSlice(user.agencyId, "settings", next);
         saveAppSettingsToSupabase(user.agencyId, next).catch(error => console.error("Failed to persist app settings:", error));
       }
       return next;
@@ -297,6 +300,30 @@ export default function App() {
   const mpoRefreshTimerRef = useRef(null);
   const mpoRefreshInFlightRef = useRef(false);
   const mpoRefreshQueuedRef = useRef(false);
+  const authDiagnosticsFlushRef = useRef(false);
+  const currentUserRef = useRef(null);
+
+  useEffect(() => {
+    currentUserRef.current = user;
+  }, [user]);
+
+  const flushAuthDiagnosticsForCurrentUser = useCallback(async () => {
+    const currentUser = currentUserRef.current;
+    if (!currentUser?.agencyId || !currentUser?.id || authDiagnosticsFlushRef.current) return 0;
+    authDiagnosticsFlushRef.current = true;
+    try {
+      return await flushAuthDiagnosticsToAudit({
+        agencyId: currentUser.agencyId,
+        actor: currentUser,
+        createAuditEvent: createAuditEventInSupabase,
+      });
+    } catch (error) {
+      console.error("Failed to flush auth diagnostics:", error);
+      return 0;
+    } finally {
+      authDiagnosticsFlushRef.current = false;
+    }
+  }, []);
 
   const resetWorkspaceState = useCallback(() => {
     setPage("dashboard");
@@ -323,12 +350,15 @@ export default function App() {
     }, 6000);
 
     const bootstrapAuth = async () => {
+      recordAuthDiagnostic("bootstrap_start");
       try {
         const { data } = await supabase.auth.getSession();
         if (!mounted) return;
+        recordAuthDiagnostic("bootstrap_session", summarizeAuthSession(data?.session));
         setAuthUser(data?.session?.user || null);
       } catch (error) {
         console.error("Failed to bootstrap auth:", error);
+        recordAuthDiagnostic("bootstrap_error", { error });
       } finally {
         if (mounted) setAuthReady(true);
         clearTimeout(timeout);
@@ -341,6 +371,11 @@ export default function App() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
+      recordAuthDiagnostic("state_change", {
+        authEvent: event,
+        ...summarizeAuthSession(session),
+      });
+      flushAuthDiagnosticsForCurrentUser();
       if (event === "SIGNED_OUT") {
         setAuthUser(null);
       } else if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "SIGNED_IN" || event === "PASSWORD_RECOVERY") {
@@ -357,7 +392,7 @@ export default function App() {
       clearTimeout(timeout);
       subscription.unsubscribe();
     };
-  }, []);
+  }, [flushAuthDiagnosticsForCurrentUser]);
 
   useEffect(() => {
     let active = true;
@@ -365,6 +400,13 @@ export default function App() {
     const hydrateUser = async () => {
       if (!authUser?.id) {
         if (active) {
+          if (user?.id) {
+            recordAuthDiagnostic("auth_user_missing_reset", {
+              previousUserId: user.id,
+              previousEmail: user.email || "",
+              previousAgencyId: user.agencyId || "",
+            });
+          }
           setSessionExpired(prev => {
             // Only show "session expired" if user was previously logged in
             return user !== null ? true : prev;
@@ -381,12 +423,23 @@ export default function App() {
           agencyId = await ensureAgencyForUser(authUser);
         } catch (agencyError) {
           console.error("Failed to ensure agency for user:", agencyError);
+          recordAuthDiagnostic("ensure_agency_error", {
+            userId: authUser.id,
+            email: authUser.email || "",
+            error: agencyError,
+          });
         }
         const appUser = await loadAppUserFromSupabase(authUser);
 
         if (!active) return;
 
         setSessionExpired(false);
+        recordAuthDiagnostic("hydrate_user_success", {
+          userId: authUser.id,
+          email: authUser.email || "",
+          agencyId: appUser?.agencyId || agencyId || "",
+          usedFallbackUser: !appUser,
+        });
         setUser(
           appUser
             ? { ...appUser, agencyId: appUser.agencyId || agencyId || null }
@@ -396,6 +449,11 @@ export default function App() {
         console.error("Failed to load user:", error);
         if (!active) return;
         setSessionExpired(false);
+        recordAuthDiagnostic("hydrate_user_error", {
+          userId: authUser.id,
+          email: authUser.email || "",
+          error,
+        });
         setUser(buildFallbackAppUser(authUser));
       }
     };
@@ -406,6 +464,66 @@ export default function App() {
       active = false;
     };
   }, [authUser?.id, resetWorkspaceState]);
+
+  useEffect(() => {
+    if (!user?.agencyId || !user?.id) return;
+    flushAuthDiagnosticsForCurrentUser();
+  }, [user?.agencyId, user?.id, flushAuthDiagnosticsForCurrentUser]);
+
+  useEffect(() => {
+    if (!user?.agencyId) return;
+    const cached = hydrateWorkspaceFromCache(user.agencyId, user.id || "");
+    let hydratedCount = 0;
+
+    if (cached.settings) {
+      _setAppSettings(cached.settings);
+      store.set("msp_app_settings", cached.settings);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.members)) {
+      setMembers(cached.members);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.notifications)) {
+      setNotifications(cached.notifications);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.vendors)) {
+      setVendors(cached.vendors);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.clients)) {
+      setClients(cached.clients);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.campaigns)) {
+      setCampaigns(cached.campaigns);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.rates)) {
+      setRates(cached.rates);
+      hydratedCount += 1;
+    }
+    if (Array.isArray(cached.mpos)) {
+      setMpos(cached.mpos);
+      hydratedCount += 1;
+    }
+
+    const cachedReceivables = Array.isArray(cached.receivables) ? cached.receivables : getStoredReceivables(user.agencyId);
+    if (Array.isArray(cachedReceivables) && cachedReceivables.length) {
+      setReceivables(cachedReceivables);
+      setReceivablesSync(getReceivablesSyncMeta("supabase"));
+      hydratedCount += 1;
+    }
+
+    if (hydratedCount) {
+      recordAuthDiagnostic("workspace_cache_hydrated", {
+        agencyId: user.agencyId,
+        userId: user.id || "",
+        sliceCount: hydratedCount,
+      });
+    }
+  }, [user?.agencyId, user?.id]);
 
   useEffect(() => {
     if (!user?.agencyId) {
@@ -420,6 +538,7 @@ export default function App() {
         if (!active) return;
         _setAppSettings(settings);
         store.set("msp_app_settings", settings);
+        setCachedWorkspaceSlice(user.agencyId, "settings", settings);
       } catch (e) {
         console.error("Failed to load app settings:", e);
       }
@@ -439,7 +558,10 @@ export default function App() {
     const loadMembers = async () => {
       try {
         const rows = await fetchAgencyMembersFromSupabase(user.agencyId);
-        if (active) setMembers(rows);
+        if (active) {
+          setMembers(rows);
+          setCachedWorkspaceSlice(user.agencyId, "members", rows);
+        }
       } catch (e) {
         console.error("Failed to load members:", e);
       }
@@ -459,7 +581,10 @@ export default function App() {
     const loadNotifications = async () => {
       try {
         const rows = await fetchNotificationsFromSupabase(user.id, user.agencyId);
-        if (active) setNotifications(rows);
+        if (active) {
+          setNotifications(rows);
+          setCachedWorkspaceSlice(user.agencyId, `notifications:${user.id}`, rows);
+        }
       } catch (e) {
         console.error("Failed to load notifications:", e);
       }
@@ -479,7 +604,10 @@ export default function App() {
     const loadVendors = async () => {
       try {
         const rows = await fetchVendorsFromSupabase(user.agencyId);
-        if (active) setVendors(rows);
+        if (active) {
+          setVendors(rows);
+          setCachedWorkspaceSlice(user.agencyId, "vendors", rows);
+        }
       } catch (e) {
         console.error("Failed to load vendors:", e);
       }
@@ -499,7 +627,10 @@ export default function App() {
     const loadClients = async () => {
       try {
         const rows = await fetchClientsFromSupabase(user.agencyId);
-        if (active) setClients(rows);
+        if (active) {
+          setClients(rows);
+          setCachedWorkspaceSlice(user.agencyId, "clients", rows);
+        }
       } catch (e) {
         console.error("Failed to load clients:", e);
       }
@@ -519,7 +650,10 @@ export default function App() {
     const loadCampaigns = async () => {
       try {
         const rows = await fetchCampaignsFromSupabase(user.agencyId);
-        if (active) setCampaigns(rows);
+        if (active) {
+          setCampaigns(rows);
+          setCachedWorkspaceSlice(user.agencyId, "campaigns", rows);
+        }
       } catch (e) {
         console.error("Failed to load campaigns:", e);
       }
@@ -539,7 +673,10 @@ export default function App() {
     const loadRates = async () => {
       try {
         const rows = await fetchRatesFromSupabase(user.agencyId);
-        if (active) setRates(rows);
+        if (active) {
+          setRates(rows);
+          setCachedWorkspaceSlice(user.agencyId, "rates", rows);
+        }
       } catch (e) {
         console.error("Failed to load rates:", e);
       }
@@ -559,7 +696,10 @@ export default function App() {
     const loadMpos = async () => {
       try {
         const rows = await fetchMposFromSupabase(user.agencyId);
-        if (active) setMpos(rows);
+        if (active) {
+          setMpos(rows);
+          setCachedWorkspaceSlice(user.agencyId, "mpos", rows);
+        }
       } catch (e) {
         console.error("Failed to load MPOs:", e);
       }
@@ -583,6 +723,7 @@ export default function App() {
         if (!active) return;
         setReceivables(rows);
         setReceivablesSync(getReceivablesSyncMeta("supabase"));
+        setCachedWorkspaceSlice(user.agencyId, "receivables", rows);
       } catch (error) {
         console.error("Failed to load receivables from Supabase:", error);
         if (!active) return;
@@ -598,6 +739,7 @@ export default function App() {
   useEffect(() => {
     if (!user?.agencyId) return;
     setStoredReceivables(user.agencyId, receivables);
+    setCachedWorkspaceSlice(user.agencyId, "receivables", receivables);
   }, [user?.agencyId, receivables]);
 
   useEffect(() => {
@@ -618,16 +760,32 @@ export default function App() {
       }
     };
     const refreshVendors = async () => {
-      try { setVendors(await fetchVendorsFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime vendors refresh failed:", error); }
+      try {
+        const rows = await fetchVendorsFromSupabase(user.agencyId);
+        setVendors(rows);
+        setCachedWorkspaceSlice(user.agencyId, "vendors", rows);
+      } catch (error) { console.error("Realtime vendors refresh failed:", error); }
     };
     const refreshClients = async () => {
-      try { setClients(await fetchClientsFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime clients refresh failed:", error); }
+      try {
+        const rows = await fetchClientsFromSupabase(user.agencyId);
+        setClients(rows);
+        setCachedWorkspaceSlice(user.agencyId, "clients", rows);
+      } catch (error) { console.error("Realtime clients refresh failed:", error); }
     };
     const refreshCampaigns = async () => {
-      try { setCampaigns(await fetchCampaignsFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime campaigns refresh failed:", error); }
+      try {
+        const rows = await fetchCampaignsFromSupabase(user.agencyId);
+        setCampaigns(rows);
+        setCachedWorkspaceSlice(user.agencyId, "campaigns", rows);
+      } catch (error) { console.error("Realtime campaigns refresh failed:", error); }
     };
     const refreshRates = async () => {
-      try { setRates(await fetchRatesFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime rates refresh failed:", error); }
+      try {
+        const rows = await fetchRatesFromSupabase(user.agencyId);
+        setRates(rows);
+        setCachedWorkspaceSlice(user.agencyId, "rates", rows);
+      } catch (error) { console.error("Realtime rates refresh failed:", error); }
     };
     const refreshMpos = async (options = {}) => {
       const { immediate = false } = options || {};
@@ -638,7 +796,9 @@ export default function App() {
         }
         mpoRefreshInFlightRef.current = true;
         try {
-          setMpos(await fetchMposFromSupabase(user.agencyId));
+          const rows = await fetchMposFromSupabase(user.agencyId);
+          setMpos(rows);
+          setCachedWorkspaceSlice(user.agencyId, "mpos", rows);
         } catch (error) {
           console.error("Realtime MPO refresh failed:", error);
         } finally {
@@ -667,25 +827,35 @@ export default function App() {
     };
     refreshMposRef.current = refreshMpos;
     const refreshMembers = async () => {
-      try { setMembers(await fetchAgencyMembersFromSupabase(user.agencyId)); } catch (error) { console.error("Realtime members refresh failed:", error); }
+      try {
+        const rows = await fetchAgencyMembersFromSupabase(user.agencyId);
+        setMembers(rows);
+        setCachedWorkspaceSlice(user.agencyId, "members", rows);
+      } catch (error) { console.error("Realtime members refresh failed:", error); }
     };
     const refreshReceivables = async () => {
       try {
         const rows = await fetchReceivablesFromSupabase(user.agencyId);
         setReceivables(rows);
         setReceivablesSync(getReceivablesSyncMeta("supabase"));
+        setCachedWorkspaceSlice(user.agencyId, "receivables", rows);
       } catch (error) {
         console.error("Realtime receivables refresh failed:", error);
         setReceivablesSync(getReceivablesSyncMeta("local", error));
       }
     };
     const refreshNotifications = async () => {
-      try { setNotifications(await fetchNotificationsFromSupabase(user.id, user.agencyId)); } catch (error) { console.error("Realtime notifications refresh failed:", error); }
+      try {
+        const rows = await fetchNotificationsFromSupabase(user.id, user.agencyId);
+        setNotifications(rows);
+        setCachedWorkspaceSlice(user.agencyId, `notifications:${user.id}`, rows);
+      } catch (error) { console.error("Realtime notifications refresh failed:", error); }
     };
     const refreshSettings = async () => {
       try {
         const settings = await fetchAppSettingsFromSupabase(user.agencyId);
         _setAppSettings(settings);
+        setCachedWorkspaceSlice(user.agencyId, "settings", settings);
       } catch (error) {
         console.error("Realtime settings refresh failed:", error);
       }
@@ -823,34 +993,52 @@ export default function App() {
     const shouldUseSupabase = !!user?.agencyId && !!user?.id && receivablesSync.mode === "supabase";
     if (!shouldUseSupabase) return upsertLocalReceivable(normalized);
 
-    try {
-      const existsInState = receivables.some(item => item.id === normalized.id);
-      const saved = existsInState && looksLikeUuid(normalized.id)
-        ? await updateReceivableInSupabase(normalized.id, normalized)
-        : await insertReceivableInSupabase(user.agencyId, user.id, normalized);
-      setReceivables(items => [saved, ...items.filter(item => item.id !== saved.id)].map(normalizeReceivableRecord));
-      return saved;
-    } catch (error) {
-      console.error("Failed to save receivable in Supabase:", error);
-      switchReceivablesToLocalFallback(error);
-      return upsertLocalReceivable(normalized);
-    }
+    const existsInState = receivables.some(item => item.id === normalized.id);
+    const previousRecord = receivables.find(item => item.id === normalized.id) || null;
+    const optimistic = normalizeReceivableRecord({ ...normalized, updatedAt: new Date().toISOString() });
+    setReceivables(items => [optimistic, ...items.filter(item => item.id !== optimistic.id)].map(normalizeReceivableRecord));
+
+    (async () => {
+      try {
+        const saved = existsInState && looksLikeUuid(optimistic.id)
+          ? await updateReceivableInSupabase(optimistic.id, optimistic)
+          : await insertReceivableInSupabase(user.agencyId, user.id, optimistic);
+        setReceivables(items => [
+          saved,
+          ...items.filter(item => item.id !== optimistic.id && item.id !== saved.id),
+        ].map(normalizeReceivableRecord));
+      } catch (error) {
+        console.error("Failed to save receivable in Supabase:", error);
+        switchReceivablesToLocalFallback(error);
+        setReceivables(items => {
+          const withoutOptimistic = items.filter(item => item.id !== optimistic.id);
+          return previousRecord
+            ? [previousRecord, ...withoutOptimistic].map(normalizeReceivableRecord)
+            : withoutOptimistic.map(normalizeReceivableRecord);
+        });
+      }
+    })();
+
+    return optimistic;
   }, [user?.agencyId, user?.id, receivablesSync.mode, receivables, switchReceivablesToLocalFallback, upsertLocalReceivable]);
 
   const handleRemoveReceivableRecord = useCallback(async (receivableId) => {
     const shouldUseSupabase = !!user?.agencyId && receivablesSync.mode === "supabase" && looksLikeUuid(receivableId);
     if (!shouldUseSupabase) return removeLocalReceivable(receivableId);
 
-    try {
-      await deleteReceivableInSupabase(receivableId);
-      setReceivables(items => items.filter(item => item.id !== receivableId));
-      return true;
-    } catch (error) {
+    const previousRecord = receivables.find(item => item.id === receivableId) || null;
+    setReceivables(items => items.filter(item => item.id !== receivableId));
+
+    deleteReceivableInSupabase(receivableId).catch(error => {
       console.error("Failed to remove receivable from Supabase:", error);
       switchReceivablesToLocalFallback(error);
-      return removeLocalReceivable(receivableId);
-    }
-  }, [user?.agencyId, receivablesSync.mode, removeLocalReceivable, switchReceivablesToLocalFallback]);
+      if (previousRecord) {
+        setReceivables(items => [previousRecord, ...items.filter(item => item.id !== receivableId)].map(normalizeReceivableRecord));
+      }
+    });
+
+    return true;
+  }, [user?.agencyId, receivablesSync.mode, receivables, switchReceivablesToLocalFallback, removeLocalReceivable]);
 
   const handleLogReceivablePayment = useCallback(async (receivableId, paymentInput) => {
     const current = receivables.find(item => item.id === receivableId);
@@ -858,33 +1046,57 @@ export default function App() {
     const shouldUseSupabase = !!user?.agencyId && !!user?.id && receivablesSync.mode === "supabase" && looksLikeUuid(receivableId);
     if (!shouldUseSupabase) return logLocalReceivablePayment(receivableId, paymentInput);
 
-    try {
-      const saved = await insertReceivablePaymentInSupabase(user.agencyId, user.id, receivableId, paymentInput, current);
-      if (saved) setReceivables(items => items.map(item => item.id === saved.id ? saved : item).map(normalizeReceivableRecord));
-      return saved;
-    } catch (error) {
-      console.error("Failed to save receivable payment in Supabase:", error);
-      switchReceivablesToLocalFallback(error);
-      return logLocalReceivablePayment(receivableId, paymentInput);
-    }
+    const payment = normalizePaymentEntry(paymentInput);
+    const optimistic = normalizeReceivableRecord({
+      ...current,
+      payments: [payment, ...(current.payments || [])],
+      lastPaymentAt: payment.receivedAt,
+      lastFollowUpAt: payment.receivedAt,
+      updatedAt: new Date().toISOString(),
+    });
+    setReceivables(items => items.map(item => item.id === receivableId ? optimistic : item).map(normalizeReceivableRecord));
+
+    insertReceivablePaymentInSupabase(user.agencyId, user.id, receivableId, paymentInput, current)
+      .then(saved => {
+        if (saved) setReceivables(items => items.map(item => item.id === saved.id ? saved : item).map(normalizeReceivableRecord));
+      })
+      .catch(error => {
+        console.error("Failed to save receivable payment in Supabase:", error);
+        switchReceivablesToLocalFallback(error);
+        setReceivables(items => items.map(item => item.id === receivableId ? current : item).map(normalizeReceivableRecord));
+      });
+
+    return optimistic;
   }, [user?.agencyId, user?.id, receivablesSync.mode, receivables, logLocalReceivablePayment, switchReceivablesToLocalFallback]);
 
   const handleUpdateReceivableStatus = useCallback(async (receivableId, updates = {}) => {
     const shouldUseSupabase = !!user?.agencyId && receivablesSync.mode === "supabase" && looksLikeUuid(receivableId);
     if (!shouldUseSupabase) return updateLocalReceivableStatus(receivableId, updates);
 
-    try {
-      const saved = await updateReceivableStatusInSupabase(receivableId, updates);
-      setReceivables(items => items.map(item => item.id === receivableId ? saved : item).map(normalizeReceivableRecord));
-      return saved;
-    } catch (error) {
-      console.error("Failed to update receivable status in Supabase:", error);
-      switchReceivablesToLocalFallback(error);
-      return updateLocalReceivableStatus(receivableId, updates);
-    }
-  }, [user?.agencyId, receivablesSync.mode, switchReceivablesToLocalFallback, updateLocalReceivableStatus]);
+    const current = receivables.find(item => item.id === receivableId);
+    const optimistic = normalizeReceivableRecord({ ...(current || {}), ...updates, id: receivableId, updatedAt: new Date().toISOString() });
+    setReceivables(items => items.map(item => item.id === receivableId ? optimistic : item).map(normalizeReceivableRecord));
+
+    updateReceivableStatusInSupabase(receivableId, updates)
+      .then(saved => {
+        setReceivables(items => items.map(item => item.id === receivableId ? saved : item).map(normalizeReceivableRecord));
+      })
+      .catch(error => {
+        console.error("Failed to update receivable status in Supabase:", error);
+        switchReceivablesToLocalFallback(error);
+        if (current) setReceivables(items => items.map(item => item.id === receivableId ? current : item).map(normalizeReceivableRecord));
+      });
+
+    return optimistic;
+  }, [user?.agencyId, receivablesSync.mode, receivables, switchReceivablesToLocalFallback, updateLocalReceivableStatus]);
 
   const handleLogout = async () => {
+    recordAuthDiagnostic("manual_sign_out_clicked", {
+      userId: user?.id || "",
+      email: user?.email || "",
+      agencyId: user?.agencyId || "",
+    });
+    await flushAuthDiagnosticsForCurrentUser();
     setSessionExpired(false);
     resetWorkspaceState();
 

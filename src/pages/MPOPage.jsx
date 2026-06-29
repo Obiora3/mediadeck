@@ -7,7 +7,7 @@ import Confirm from "../components/Confirm";
 import { Btn, Field, AttachmentField, Card, Stat } from "../components/ui/primitives";
 import PrintPreview from "../components/mpo/PrintPreview";
 import { buildCSV, sanitizeMPOForExport, buildMPOHTML } from "../utils/export";
-import { activeOnly, archivedOnly, isArchived } from "../utils/records";
+import { activeOnly, archivedOnly, isArchived, archiveRecord, restoreRecord } from "../utils/records";
 import { fmtN } from "../utils/formatters";
 import { formatRoleLabel, hasPermission, readOnlyMessage } from "../constants/roles";
 import {
@@ -39,6 +39,7 @@ import {
   updateMpoInSupabase,
   archiveMpoInSupabase,
   restoreMpoInSupabase,
+  deleteMpoInSupabase,
   updateMpoStatusInSupabase,
   updateMpoExecutionInSupabase,
   generateNextMpoNoFromSupabase,
@@ -2202,7 +2203,7 @@ const buildImportedMpoRecord = ({ group, campaign, client, vendor, rates = [], u
   };
 };
 
-const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rates = [], user, appSettings, setMpos, setVendors = () => {}, onClose, onToast, onBulkImportStateChange = () => {}, requestMpoRefresh = async () => {} }) => {
+const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rates = [], mpos = [], user, appSettings, setMpos, setVendors = () => {}, onClose, onToast, onBulkImportStateChange = () => {}, requestMpoRefresh = async () => {} }) => {
   const [step, setStep] = useState("setup");
   const [campaignId, setCampaignId] = useState("");
   const [year, setYear] = useState(String(new Date().getFullYear()));
@@ -2254,13 +2255,73 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
       || message.includes("duplicate key value");
   };
 
-  const createImportedDraftWithRecovery = async ({ group, campaign, client, vendor, importBatchId }) => {
-    let lastError = null;
+  const normalizeMpoNoKey = (value = "") => planText(value).toLowerCase();
 
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const mpoNo = await runImportStepWithRetry(
-        () => generateNextMpoNoFromSupabase(campaign?.brand || "MPO")
-      );
+  const buildFallbackImportMpoNo = (brand = "MPO", sequence = 1) => {
+    const prefix = (brand || "MPO").replace(/\s+/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || "MPO";
+    const selectedMonth = selectedMonths[0] || PLAN_IMPORT_MONTHS[new Date().getMonth()];
+    const monthAbbrev = String(selectedMonth || "").slice(0, 3).toUpperCase() || "MPO";
+    const yearSuffix = String(year || new Date().getFullYear()).slice(-2);
+    return `${prefix}${String(Math.max(1, Number(sequence) || 1)).padStart(3, "0")}-${monthAbbrev}${yearSuffix}`;
+  };
+
+  const incrementMpoNoCandidate = (mpoNo = "", step = 1) => {
+    const raw = planText(mpoNo);
+    if (!raw) return "";
+    const direct = raw.match(/^([A-Za-z]+)(\d+)(.*)$/);
+    if (direct) {
+      const [, prefix, numeric, suffix] = direct;
+      return `${prefix}${String((Number(numeric) || 0) + step).padStart(numeric.length, "0")}${suffix}`;
+    }
+
+    const numericMatches = Array.from(raw.matchAll(/\d+/g));
+    const preferred = numericMatches.find((match) => match[0].length <= 5 && Number(match[0]) < 10000) || numericMatches[0];
+    if (!preferred) return `${raw}-${String(step + 1).padStart(2, "0")}`;
+
+    const numeric = preferred[0];
+    const start = preferred.index || 0;
+    const nextNumber = String((Number(numeric) || 0) + step).padStart(numeric.length, "0");
+    return `${raw.slice(0, start)}${nextNumber}${raw.slice(start + numeric.length)}`;
+  };
+
+  const reserveImportMpoNo = async ({ campaign, usedMpoNumberKeys, previousMpoNo = "", attempt = 1 }) => {
+    const brand = campaign?.brand || "MPO";
+    let candidate = previousMpoNo
+      ? incrementMpoNoCandidate(previousMpoNo, 1)
+      : await runImportStepWithRetry(() => generateNextMpoNoFromSupabase(brand));
+
+    if (!candidate) candidate = buildFallbackImportMpoNo(brand, attempt);
+
+    for (let guard = 0; guard < 75; guard += 1) {
+      const key = normalizeMpoNoKey(candidate);
+      if (key && !usedMpoNumberKeys.has(key)) {
+        const existing = await runImportStepWithRetry(
+          () => fetchMappedMpoByAgencyAndNo(user?.agencyId, candidate),
+          2
+        );
+        if (!existing) {
+          usedMpoNumberKeys.add(key);
+          return candidate;
+        }
+      }
+      candidate = incrementMpoNoCandidate(candidate, 1) || buildFallbackImportMpoNo(brand, attempt + guard + 1);
+    }
+
+    throw new Error("Could not reserve a unique MPO number for this import. Refresh MPOs and try again.");
+  };
+
+  const createImportedDraftWithRecovery = async ({ group, campaign, client, vendor, importBatchId, usedMpoNumberKeys }) => {
+    let lastError = null;
+    let lastMpoNo = "";
+
+    for (let attempt = 1; attempt <= 12; attempt += 1) {
+      const mpoNo = await reserveImportMpoNo({
+        campaign,
+        usedMpoNumberKeys,
+        previousMpoNo: lastMpoNo,
+        attempt,
+      });
+      lastMpoNo = mpoNo;
 
       const record = buildImportedMpoRecord({
         group,
@@ -2281,11 +2342,12 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
         const saved = await runImportStepWithRetry(
           () => createMpoInSupabase(user?.agencyId, user?.id, record)
         );
+        usedMpoNumberKeys.add(normalizeMpoNoKey(saved?.mpoNo || mpoNo));
         return { saved, mpoNo };
       } catch (error) {
         lastError = error;
 
-        if (isTransientImportError(error) || isDuplicateMpoNumberError(error)) {
+        if (isTransientImportError(error)) {
           try {
             const existing = await fetchMappedMpoByAgencyAndNo(user?.agencyId, mpoNo);
             if (existing) return { saved: existing, mpoNo };
@@ -2294,7 +2356,7 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
           }
         }
 
-        if (attempt >= 3 || !isDuplicateMpoNumberError(error)) {
+        if (attempt >= 12 || (!isDuplicateMpoNumberError(error) && !isTransientImportError(error))) {
           throw error;
         }
       }
@@ -2454,6 +2516,11 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
       const workingAssignments = { ...vendorAssignments };
       const refreshedVendors = [...activeOnly(vendors)];
       const autoCreatedVendors = [];
+      const usedMpoNumberKeys = new Set(
+        (Array.isArray(mpos) ? mpos : [])
+          .map((mpo) => normalizeMpoNoKey(mpo?.mpoNo))
+          .filter(Boolean)
+      );
 
       if (autoCreateMissingVendors) {
         for (const group of activeGroups.filter((item) => !workingAssignments[item.id] && item.vendorName)) {
@@ -2498,6 +2565,7 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
           client,
           vendor,
           importBatchId,
+          usedMpoNumberKeys,
         });
         createAuditEventInSupabase({
           agencyId: user?.agencyId,
@@ -2520,8 +2588,18 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
         }).catch((error) => console.error("Failed to write MPO import audit event:", error));
         createdRecords.push(saved);
       }
-      if (createdRecords.length) {
-        setMpos((items) => [...createdRecords, ...items]);
+      const uniqueCreatedRecords = Array.from(new Map(
+        createdRecords.filter((record) => record?.id).map((record) => [record.id, record])
+      ).values());
+      if (uniqueCreatedRecords.length) {
+        setMpos((items) => {
+          const existing = Array.isArray(items) ? items : [];
+          const createdIds = new Set(uniqueCreatedRecords.map((record) => record.id));
+          return [
+            ...uniqueCreatedRecords,
+            ...existing.filter((record) => !createdIds.has(record?.id)),
+          ];
+        });
       }
       if (autoCreatedVendors.length) {
         setVendors?.((items) => {
@@ -2542,6 +2620,7 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
         msg: `${createdRecords.length} MPO draft${createdRecords.length !== 1 ? "s" : ""} created from ${fileName || "media plan"}${autoCreatedVendors.length ? ` · ${autoCreatedVendors.length} vendor${autoCreatedVendors.length !== 1 ? "s" : ""} auto-created` : ""}.`,
         type: "success",
       });
+      await requestMpoRefresh?.();
       onClose?.();
     } catch (error) {
       console.error("Failed to create MPO drafts from media plan:", error);
@@ -3450,9 +3529,12 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
 
   const restoreMPO = async (id) => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const restored = await restoreMpoInSupabase(id);
-      setMpos(m => m.map(x => x.id === id ? restored : x));
+    const previous = mpos.find(item => item.id === id);
+    if (previous) setMpos(items => items.map(item => item.id === id ? restoreRecord(item) : item));
+    setToast({ msg: "MPO restored.", type: "success" });
+
+    restoreMpoInSupabase(id).then(restored => {
+      setMpos(items => items.map(item => item.id === id ? restored : item));
       createAuditEventInSupabase({
         agencyId: user.agencyId,
         recordType: "mpo",
@@ -3461,10 +3543,10 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
         actor: user,
         metadata: { mpoNo: restored.mpoNo || "", status: restored.status || "draft" },
       }).catch(error => console.error("Failed to write MPO audit event:", error));
-      setToast({ msg: "MPO restored.", type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to restore MPO.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setMpos(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to restore MPO. The local change was rolled back.", type: "error" });
+    });
   };
 
   const openNew = () => {
@@ -3591,7 +3673,12 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
     if (campaignBudget > 0 && grandTotal > campaignBudget) return setToast({ msg: "This MPO total is above the campaign budget. Reduce spots or update the campaign budget first.", type: "error" });
 
     try {
-      const generatedMpoNo = editId ? mpoData.mpoNo : await generateNextMpoNoFromSupabase(campaign?.brand || mpoData.brand || "MPO");
+      const brandForMpoNo = campaign?.brand || mpoData.brand || "MPO";
+      const generatedMpoNo = editId ? mpoData.mpoNo : (
+        mpoData.mpoNo && mpoData.mpoNo !== "Pending auto-number on save"
+          ? mpoData.mpoNo
+          : genMpoNo(brandForMpoNo, mpos)
+      );
       const existingExec = editId ? (mpos.find(m => m.id === editId) || {}) : {};
       const derivedMonths = deriveMonthsFromSpotRows(effectiveSpots, mpoData.months?.length ? mpoData.months : [mpoData.month]);
       const record = { id: editId || uid(), ...mpoData, preparedSignature: mpoData.preparedSignature || user?.signatureDataUrl || "", signedSignature: mpoData.signedSignature || "", agencyEmail: mpoData.agencyEmail || user?.agencyEmail || "", agencyPhone: mpoData.agencyPhone || user?.agencyPhone || "", mpoNo: generatedMpoNo, vendorName: vendor?.name || "", clientName: client?.name || "", campaignName: campaign?.name || "", brand: campaign?.brand || "", medium: mpoData.medium || campaign?.medium || "", month: derivedMonths[0] || mpoData.month || "", months: derivedMonths, spots: effectiveSpots, totalSpots, totalGross, discPct, discAmt, lessDisc, commPct, commAmt: commAmt, afterComm, surchPct, surchAmt, surchLabel: surcharge.label, netVal, vatPct: VAT_RATE, vatAmt, grandTotal, terms: appSettings?.mpoTerms || DEFAULT_APP_SETTINGS.mpoTerms, roundToWholeNaira: !!appSettings?.roundToWholeNaira,
@@ -3622,34 +3709,63 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
         createdAt: editId ? (mpos.find(m => m.id === editId)?.createdAt || Date.now()) : Date.now(), updatedAt: Date.now() };
 
       setSpots(effectiveSpots);
-      let saved;
       if (editId) {
-        saved = { ...(await updateMpoInSupabase(editId, record)), preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
-        setMpos(m => m.map(x => x.id === editId ? saved : x));
-        createAuditEventInSupabase({
-          agencyId: user.agencyId,
-          recordType: "mpo",
-          recordId: editId,
-          action: "updated",
-          actor: user,
-          metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
-        }).catch(error => console.error("Failed to write MPO audit event:", error));
+        const previousMpo = mpos.find(item => item.id === editId);
+        const optimistic = { ...record, id: editId, preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
+        setMpos(m => m.map(x => x.id === editId ? optimistic : x));
+        setToast({ msg: "MPO updated.", type: "success" });
+        clearSavedDraft(activeDraftId, { quiet: true });
+        setActiveDraftId(null);
+        setView("list");
+
+        updateMpoInSupabase(editId, record)
+          .then(savedRecord => {
+            const saved = { ...savedRecord, preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
+            setMpos(m => m.map(x => x.id === editId ? saved : x));
+            createAuditEventInSupabase({
+              agencyId: user.agencyId,
+              recordType: "mpo",
+              recordId: editId,
+              action: "updated",
+              actor: user,
+              metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
+            }).catch(error => console.error("Failed to write MPO audit event:", error));
+          })
+          .catch(error => {
+            console.error("Failed to save MPO:", error);
+            if (previousMpo) setMpos(m => m.map(x => x.id === editId ? previousMpo : x));
+            setToast({ msg: error.message || "MPO update failed. The local change was rolled back.", type: "error" });
+          });
+        return;
       } else {
-        saved = { ...(await createMpoInSupabase(user.agencyId, user.id, record)), preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
-        setMpos(m => [saved, ...m]);
-        createAuditEventInSupabase({
-          agencyId: user.agencyId,
-          recordType: "mpo",
-          recordId: saved.id,
-          action: "created",
-          actor: user,
-          metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
-        }).catch(error => console.error("Failed to write MPO audit event:", error));
+        const optimistic = { ...record, preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
+        setMpos(m => [optimistic, ...m.filter(item => item.id !== optimistic.id)]);
+        setToast({ msg: `MPO ${generatedMpoNo} saved.`, type: "success" });
+        clearSavedDraft(activeDraftId, { quiet: true });
+        setActiveDraftId(null);
+        setView("list");
+
+        generateNextMpoNoFromSupabase(brandForMpoNo)
+          .then((officialMpoNo) => createMpoInSupabase(user.agencyId, user.id, { ...record, mpoNo: officialMpoNo || generatedMpoNo }))
+          .then(savedRecord => {
+            const saved = { ...savedRecord, preparedSignature: record.preparedSignature, signedSignature: record.signedSignature };
+            setMpos(m => [saved, ...m.filter(item => item.id !== optimistic.id && item.id !== saved.id)]);
+            createAuditEventInSupabase({
+              agencyId: user.agencyId,
+              recordType: "mpo",
+              recordId: saved.id,
+              action: "created",
+              actor: user,
+              metadata: { mpoNo: saved.mpoNo || generatedMpoNo, status: saved.status || "draft", grandTotal: saved.grandTotal || grandTotal },
+            }).catch(error => console.error("Failed to write MPO audit event:", error));
+          })
+          .catch(error => {
+            console.error("Failed to save MPO:", error);
+            setMpos(m => m.filter(item => item.id !== optimistic.id));
+            setToast({ msg: error.message || "MPO save failed. The local draft was removed from the list.", type: "error" });
+          });
+        return;
       }
-      setToast({ msg: editId ? "MPO updated!" : `MPO ${generatedMpoNo} saved!`, type: "success" });
-      clearSavedDraft(activeDraftId, { quiet: true });
-      setActiveDraftId(null);
-      setView("list");
     } catch (e) {
       setToast({ msg: e.message || "Failed to save MPO.", type: "error" });
     }
@@ -3657,10 +3773,15 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
 
   const archiveMPO = async (id) => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const archived = await archiveMpoInSupabase(id);
+    const previous = mpos.find(item => item.id === id);
+    const optimistic = previous ? archiveRecord(previous, user) : null;
+    if (optimistic) setMpos(m => m.map(x => x.id === id ? optimistic : x));
+    setSelectedMpoIds(ids => ids.filter(item => item !== id));
+    setConfirm(null);
+    setToast({ msg: "MPO archived.", type: "success" });
+
+    archiveMpoInSupabase(id).then(archived => {
       setMpos(m => m.map(x => x.id === id ? archived : x));
-      setSelectedMpoIds(ids => ids.filter(item => item !== id));
       createAuditEventInSupabase({
         agencyId: user.agencyId,
         recordType: "mpo",
@@ -3669,24 +3790,21 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
         actor: user,
         metadata: { mpoNo: archived.mpoNo || "", status: archived.status || "draft" },
       }).catch(error => console.error("Failed to write MPO audit event:", error));
-      setConfirm(null);
-      setToast({ msg: "MPO archived.", type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to archive MPO.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setMpos(m => m.map(x => x.id === id ? previous : x));
+      setToast({ msg: e.message || "Failed to archive MPO. The local change was rolled back.", type: "error" });
+    });
   };
 
   const deleteMPO = async (id) => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const mpo = mpos.find(item => item.id === id);
-      const mod = await import("../services/mpos");
-      if (typeof mod.deleteMpoInSupabase !== "function") {
-        throw new Error("deleteMpoInSupabase is not available in ../services/mpos yet.");
-      }
-      await mod.deleteMpoInSupabase(id);
-      setMpos(items => items.filter(item => item.id !== id));
-      setSelectedMpoIds(ids => ids.filter(item => item !== id));
+    const mpo = mpos.find(item => item.id === id);
+    setMpos(items => items.filter(item => item.id !== id));
+    setSelectedMpoIds(ids => ids.filter(item => item !== id));
+    setConfirm(null);
+    setToast({ msg: "MPO deleted.", type: "success" });
+
+    deleteMpoInSupabase(id).then(() => {
       createAuditEventInSupabase({
         agencyId: user.agencyId,
         recordType: "mpo",
@@ -3695,86 +3813,75 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
         actor: user,
         metadata: { mpoNo: mpo?.mpoNo || "", status: mpo?.status || "draft" },
       }).catch(error => console.error("Failed to write MPO audit event:", error));
-      setConfirm(null);
-      setToast({ msg: "MPO deleted.", type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to delete MPO.", type: "error" });
-    }
+    }).catch(e => {
+      if (mpo) setMpos(items => [mpo, ...items.filter(item => item.id !== id)]);
+      setToast({ msg: e.message || "Failed to delete MPO. The local change was rolled back.", type: "error" });
+    });
   };
 
   const archiveSelectedMpos = async () => {
     if (!selectedVisibleMpoIds.length) return setToast({ msg: "Select at least one MPO first.", type: "error" });
-    try {
-      for (const id of selectedVisibleMpoIds) {
-        const archived = await archiveMpoInSupabase(id);
-        setMpos(items => items.map(item => item.id === id ? archived : item));
-        createAuditEventInSupabase({
-          agencyId: user.agencyId,
-          recordType: "mpo",
-          recordId: id,
-          action: "archived",
-          actor: user,
-          metadata: { mpoNo: archived.mpoNo || "", status: archived.status || "draft" },
-        }).catch(error => console.error("Failed to write MPO audit event:", error));
-      }
-      setSelectedMpoIds(ids => ids.filter(id => !selectedVisibleMpoIds.includes(id)));
-      setConfirm(null);
-      setToast({ msg: `${selectedVisibleMpoIds.length} MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""} archived.`, type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to archive selected MPOs.", type: "error" });
-    }
+    const idsToArchive = [...selectedVisibleMpoIds];
+    const previousItems = mpos.filter(item => idsToArchive.includes(item.id));
+    setMpos(items => items.map(item => idsToArchive.includes(item.id) ? archiveRecord(item, user) : item));
+    setSelectedMpoIds(ids => ids.filter(id => !idsToArchive.includes(id)));
+    setConfirm(null);
+    setToast({ msg: `${idsToArchive.length} MPO${idsToArchive.length !== 1 ? "s" : ""} archived.`, type: "success" });
+
+    Promise.allSettled(idsToArchive.map(async (id) => {
+      const archived = await archiveMpoInSupabase(id);
+      setMpos(items => items.map(item => item.id === id ? archived : item));
+      createAuditEventInSupabase({
+        agencyId: user.agencyId,
+        recordType: "mpo",
+        recordId: id,
+        action: "archived",
+        actor: user,
+        metadata: { mpoNo: archived.mpoNo || "", status: archived.status || "draft" },
+      }).catch(error => console.error("Failed to write MPO audit event:", error));
+      return archived;
+    })).then(results => {
+      const failedIds = results
+        .map((result, index) => result.status === "rejected" ? idsToArchive[index] : null)
+        .filter(Boolean);
+      if (!failedIds.length) return;
+      setMpos(items => {
+        const rollbackById = new Map(previousItems.filter(item => failedIds.includes(item.id)).map(item => [item.id, item]));
+        return items.map(item => rollbackById.get(item.id) || item);
+      });
+      setToast({ msg: `${failedIds.length} MPO${failedIds.length !== 1 ? "s" : ""} could not be archived and were restored locally.`, type: "error" });
+    });
   };
 
   const deleteSelectedMpos = async () => {
     if (!selectedVisibleMpoIds.length) return setToast({ msg: "Select at least one MPO first.", type: "error" });
-    try {
-      const mod = await import("../services/mpos");
-      if (typeof mod.deleteMpoInSupabase !== "function") {
-        throw new Error("deleteMpoInSupabase is not available in ../services/mpos yet.");
-      }
-      const selectedItems = mpos.filter(item => selectedVisibleMpoIds.includes(item.id));
-      const shouldShowProgress = selectedItems.length > 2;
-      if (shouldShowProgress) {
-        setDeleteProgress({ current: 0, total: selectedItems.length, label: "Preparing bulk delete..." });
-      }
-      let completed = 0;
-      for (const mpo of selectedItems) {
-        if (shouldShowProgress) {
-          setDeleteProgress({
-            current: completed,
-            total: selectedItems.length,
-            label: `Deleting ${completed + 1} of ${selectedItems.length}: ${mpo.mpoNo || mpo.id}`,
-          });
-        }
-        await mod.deleteMpoInSupabase(mpo.id);
-        completed += 1;
-        if (shouldShowProgress) {
-          setDeleteProgress({
-            current: completed,
-            total: selectedItems.length,
-            label: completed >= selectedItems.length
-              ? `Deleted ${completed} of ${selectedItems.length}`
-              : `Deleted ${completed} of ${selectedItems.length}`,
-          });
-        }
-        createAuditEventInSupabase({
-          agencyId: user.agencyId,
-          recordType: "mpo",
-          recordId: mpo.id,
-          action: "deleted",
-          actor: user,
-          metadata: { mpoNo: mpo?.mpoNo || "", status: mpo?.status || "draft" },
-        }).catch(error => console.error("Failed to write MPO audit event:", error));
-      }
-      setMpos(items => items.filter(item => !selectedVisibleMpoIds.includes(item.id)));
-      setSelectedMpoIds(ids => ids.filter(id => !selectedVisibleMpoIds.includes(id)));
-      setConfirm(null);
-      setToast({ msg: `${selectedVisibleMpoIds.length} MPO${selectedVisibleMpoIds.length !== 1 ? "s" : ""} deleted.`, type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to delete selected MPOs.", type: "error" });
-    } finally {
-      setDeleteProgress(null);
-    }
+    const idsToDelete = [...selectedVisibleMpoIds];
+    const selectedItems = mpos.filter(item => idsToDelete.includes(item.id));
+    setMpos(items => items.filter(item => !idsToDelete.includes(item.id)));
+    setSelectedMpoIds(ids => ids.filter(id => !idsToDelete.includes(id)));
+    setConfirm(null);
+    setDeleteProgress(null);
+    setToast({ msg: `${idsToDelete.length} MPO${idsToDelete.length !== 1 ? "s" : ""} deleted.`, type: "success" });
+
+    Promise.allSettled(selectedItems.map(async (mpo) => {
+      await deleteMpoInSupabase(mpo.id);
+      createAuditEventInSupabase({
+        agencyId: user.agencyId,
+        recordType: "mpo",
+        recordId: mpo.id,
+        action: "deleted",
+        actor: user,
+        metadata: { mpoNo: mpo?.mpoNo || "", status: mpo?.status || "draft" },
+      }).catch(error => console.error("Failed to write MPO audit event:", error));
+      return mpo.id;
+    })).then(results => {
+      const failedItems = results
+        .map((result, index) => result.status === "rejected" ? selectedItems[index] : null)
+        .filter(Boolean);
+      if (!failedItems.length) return;
+      setMpos(items => [...failedItems, ...items.filter(item => !failedItems.some(failed => failed.id === item.id))]);
+      setToast({ msg: `${failedItems.length} MPO${failedItems.length !== 1 ? "s" : ""} could not be deleted and were restored locally.`, type: "error" });
+    });
   };
 
   const openPreview = async (mpo) => {
@@ -3986,6 +4093,7 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
           clients={clients}
           campaigns={campaigns}
           rates={rates}
+          mpos={mpos}
           user={user}
           appSettings={appSettings}
           setMpos={setMpos}

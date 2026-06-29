@@ -348,7 +348,15 @@ export const fetchMappedMpoByAgencyAndNo = async (agencyId, mpoNo) => {
 
   if (parentError) throw parentError;
   if (!parent) return null;
-  return mapMpoFromSupabase(parent, []);
+
+  const { data: spotRows, error: spotError } = await supabase
+    .from("mpo_spots")
+    .select(mpoSpotSelect)
+    .eq("mpo_id", parent.id)
+    .order("sort_order", { ascending: true });
+  if (spotError) throw spotError;
+
+  return mapMpoFromSupabase(parent, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
 
 const deleteMpoAttachmentsFromSupabase = async (agencyId, mpoId) => {

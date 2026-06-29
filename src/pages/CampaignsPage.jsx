@@ -4,7 +4,7 @@ import Empty from "../components/Empty";
 import Toast from "../components/Toast";
 import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
-import { activeOnly, archivedOnly, isArchived } from "../utils/records";
+import { activeOnly, archivedOnly, isArchived, archiveRecord, restoreRecord } from "../utils/records";
 import { fmtN } from "../utils/formatters";
 import { hasPermission, readOnlyMessage, formatRoleLabel, isAdmin, adminOnlyMessage } from "../constants/roles";
 import { createCampaignInSupabase, updateCampaignInSupabase, archiveCampaignInSupabase, restoreCampaignInSupabase, deleteCampaignInSupabase } from "../services/campaigns";
@@ -25,56 +25,88 @@ const CampaignsPage = ({ campaigns, setCampaigns, clients, user }) => {
     if (f.budget && (parseFloat(f.budget) || 0) < 0) return setToast({ msg: "Budget cannot be negative.", type: "error" });
     const duplicate = campaigns.find(c => c.id !== modal?.id && !isArchived(c) && c.clientId === f.clientId && c.name.trim().toLowerCase() === f.name.trim().toLowerCase());
     if (duplicate) return setToast({ msg: "A campaign with this client and title already exists.", type: "error" });
-    try {
-      if (modal === "add") {
-        const newCampaign = await createCampaignInSupabase(user.agencyId, user.id, f);
-        setCampaigns(v => [newCampaign, ...v]);
-        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "campaign", recordId: newCampaign.id, action: "created", actor: user, metadata: { name: newCampaign.name || "", status: newCampaign.status || "planning" } }).catch(error => console.error("Failed to write audit event:", error));
-      } else {
-        const updatedCampaign = await updateCampaignInSupabase(modal.id, f);
-        setCampaigns(v => v.map(x => x.id === modal.id ? updatedCampaign : x));
-        createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "campaign", recordId: modal.id, action: "updated", actor: user, metadata: { name: updatedCampaign.name || "", status: updatedCampaign.status || "planning" } }).catch(error => console.error("Failed to write audit event:", error));
-      }
-      setToast({ msg: modal === "add" ? "Campaign created." : "Campaign updated.", type: "success" }); setModal(null); setF(blank);
-    } catch (e) {
+
+    const isAdding = modal === "add";
+    const modalId = isAdding ? null : modal.id;
+    const previous = modalId ? campaigns.find(item => item.id === modalId) : null;
+    const optimistic = {
+      ...(previous || {}),
+      ...f,
+      id: isAdding ? `temp_campaign_${Date.now()}` : modalId,
+      createdAt: previous?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      archivedAt: previous?.archivedAt || null,
+    };
+
+    setCampaigns(items => isAdding ? [optimistic, ...items] : items.map(item => item.id === modalId ? optimistic : item));
+    setToast({ msg: isAdding ? "Campaign created." : "Campaign updated.", type: "success" });
+    setModal(null);
+    setF(blank);
+
+    const task = isAdding
+      ? createCampaignInSupabase(user.agencyId, user.id, f)
+      : updateCampaignInSupabase(modalId, f);
+
+    task.then(savedCampaign => {
+      setCampaigns(items => isAdding
+        ? [savedCampaign, ...items.filter(item => item.id !== optimistic.id && item.id !== savedCampaign.id)]
+        : items.map(item => item.id === modalId ? savedCampaign : item));
+      createAuditEventInSupabase({
+        agencyId: user.agencyId,
+        recordType: "campaign",
+        recordId: savedCampaign.id || modalId,
+        action: isAdding ? "created" : "updated",
+        actor: user,
+        metadata: { name: savedCampaign.name || "", status: savedCampaign.status || "planning" },
+      }).catch(error => console.error("Failed to write audit event:", error));
+    }).catch(e => {
+      if (isAdding) setCampaigns(items => items.filter(item => item.id !== optimistic.id));
+      else if (previous) setCampaigns(items => items.map(item => item.id === modalId ? previous : item));
       setToast({ msg: e.message || "Failed to save campaign.", type: "error" });
-    }
+    });
   };
   const del = async id => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const archived = await archiveCampaignInSupabase(id);
-      setCampaigns(v => v.map(x => x.id === id ? archived : x));
+    const previous = campaigns.find(item => item.id === id);
+    if (previous) setCampaigns(items => items.map(item => item.id === id ? archiveRecord(item, user) : item));
+    setToast({ msg: "Campaign archived.", type: "success" });
+    setConfirm(null);
+
+    archiveCampaignInSupabase(id).then(archived => {
+      setCampaigns(items => items.map(item => item.id === id ? archived : item));
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "campaign", recordId: id, action: "archived", actor: user, metadata: { name: archived.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Campaign archived.", type: "success" }); setConfirm(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to archive campaign.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setCampaigns(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to archive campaign. The local change was rolled back.", type: "error" });
+    });
   };
   const restore = async id => {
     if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-    try {
-      const restored = await restoreCampaignInSupabase(id);
-      setCampaigns(v => v.map(x => x.id === id ? restored : x));
+    const previous = campaigns.find(item => item.id === id);
+    if (previous) setCampaigns(items => items.map(item => item.id === id ? restoreRecord(item) : item));
+    setToast({ msg: "Campaign restored.", type: "success" });
+
+    restoreCampaignInSupabase(id).then(restored => {
+      setCampaigns(items => items.map(item => item.id === id ? restored : item));
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "campaign", recordId: id, action: "restored", actor: user, metadata: { name: restored.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Campaign restored.", type: "success" });
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to restore campaign.", type: "error" });
-    }
+    }).catch(e => {
+      if (previous) setCampaigns(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to restore campaign. The local change was rolled back.", type: "error" });
+    });
   };
   const hardDelete = async id => {
     if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
-    try {
-      const target = campaigns.find(x => x.id === id);
-      await deleteCampaignInSupabase(id);
-      setCampaigns(v => v.filter(x => x.id !== id));
+    const target = campaigns.find(x => x.id === id);
+    setCampaigns(items => items.filter(item => item.id !== id));
+    setToast({ msg: "Campaign deleted permanently.", type: "success" });
+    setConfirm(null);
+
+    deleteCampaignInSupabase(id).then(() => {
       createAuditEventInSupabase({ agencyId: user.agencyId, recordType: "campaign", recordId: id, action: "deleted", actor: user, metadata: { name: target?.name || "" } }).catch(error => console.error("Failed to write audit event:", error));
-      setToast({ msg: "Campaign deleted permanently.", type: "success" }); setConfirm(null);
-    } catch (e) {
-      setToast({ msg: e.message || "Failed to delete campaign.", type: "error" });
-    }
+    }).catch(e => {
+      if (target) setCampaigns(items => [target, ...items.filter(item => item.id !== id)]);
+      setToast({ msg: e.message || "Failed to delete campaign. The local change was rolled back.", type: "error" });
+    });
   };
   const clientOpts = activeOnly(clients).map(c => ({ value: c.id, label: c.name }));
   const clientBrands = f.clientId ? (clients.find(c => c.id === f.clientId)?.brands || "").split(",").map(b => b.trim()).filter(Boolean) : [];

@@ -4,7 +4,7 @@ import Empty from "../components/Empty";
 import Toast from "../components/Toast";
 import Modal from "../components/Modal";
 import Confirm from "../components/Confirm";
-import { activeOnly, archivedOnly, isArchived } from "../utils/records";
+import { activeOnly, archivedOnly, isArchived, archiveRecord, restoreRecord } from "../utils/records";
 import { fmtN } from "../utils/formatters";
 import { hasPermission, readOnlyMessage, formatRoleLabel, isAdmin, adminOnlyMessage } from "../constants/roles";
 import { createVendorInSupabase, updateVendorInSupabase, archiveVendorInSupabase, restoreVendorInSupabase, deleteVendorInSupabase } from "../services/vendors";
@@ -29,63 +29,70 @@ const VendorsPage = ({ vendors, setVendors, user }) => {
     return setToast({ msg: "Name and type required.", type: "error" });
   }
 
-  try {
-    if (modal === "add") {
-      const newVendor = await createVendorInSupabase(user.agencyId, user.id, f);
-      setVendors(v => [newVendor, ...v]);
-    } else {
-      const updatedVendor = await updateVendorInSupabase(modal.id, f);
-      setVendors(v => v.map(x => x.id === modal.id ? updatedVendor : x));
-    }
+  const isAdding = modal === "add";
+  const previous = !isAdding ? vendors.find(item => item.id === modal.id) : null;
+  const optimistic = {
+    ...(previous || {}),
+    ...f,
+    id: isAdding ? `temp_vendor_${Date.now()}` : modal.id,
+    createdAt: previous?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+    archivedAt: previous?.archivedAt || null,
+  };
+  setVendors(items => isAdding ? [optimistic, ...items] : items.map(item => item.id === modal.id ? optimistic : item));
+  setToast({ msg: isAdding ? "Vendor added." : "Vendor updated.", type: "success" });
+  setModal(null);
+  setF(blank);
 
-    setToast({
-      msg: modal === "add" ? "Vendor added." : "Vendor updated.",
-      type: "success",
-    });
-    setModal(null);
-    setF(blank);
-  } catch (e) {
-    setToast({
-      msg: e.message || "Failed to save vendor.",
-      type: "error",
-    });
-  }
+  const task = isAdding
+    ? createVendorInSupabase(user.agencyId, user.id, f)
+    : updateVendorInSupabase(modal.id, f);
+  task.then(saved => {
+    setVendors(items => isAdding
+      ? [saved, ...items.filter(item => item.id !== optimistic.id && item.id !== saved.id)]
+      : items.map(item => item.id === modal.id ? saved : item));
+  }).catch(e => {
+    if (isAdding) setVendors(items => items.filter(item => item.id !== optimistic.id));
+    else if (previous) setVendors(items => items.map(item => item.id === modal.id ? previous : item));
+    setToast({ msg: e.message || "Failed to save vendor. The local change was rolled back.", type: "error" });
+  });
 };
 
 const del = async (id) => {
   if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-  try {
-    const archivedVendor = await archiveVendorInSupabase(id);
-    setVendors(v => v.map(x => x.id === id ? archivedVendor : x));
-    setToast({ msg: "Vendor archived.", type: "success" });
-    setConfirm(null);
-  } catch (e) {
-    setToast({
-      msg: e.message || "Failed to archive vendor.",
-      type: "error",
+  const previous = vendors.find(item => item.id === id);
+  if (previous) setVendors(items => items.map(item => item.id === id ? archiveRecord(item, user) : item));
+  setToast({ msg: "Vendor archived.", type: "success" });
+  setConfirm(null);
+  archiveVendorInSupabase(id)
+    .then(archivedVendor => setVendors(v => v.map(x => x.id === id ? archivedVendor : x)))
+    .catch(e => {
+      if (previous) setVendors(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to archive vendor. The local change was rolled back.", type: "error" });
     });
-  }
 };
 const restore = async (id) => {
   if (!canManage) return setToast({ msg: readOnlyMessage(user), type: "error" });
-  try {
-    const restoredVendor = await restoreVendorInSupabase(id);
-    setVendors(v => v.map(x => x.id === id ? restoredVendor : x));
-    setToast({ msg: "Vendor restored.", type: "success" });
-  } catch (e) {
-    setToast({ msg: e.message || "Failed to restore vendor.", type: "error" });
-  }
+  const previous = vendors.find(item => item.id === id);
+  if (previous) setVendors(items => items.map(item => item.id === id ? restoreRecord(item) : item));
+  setToast({ msg: "Vendor restored.", type: "success" });
+  restoreVendorInSupabase(id)
+    .then(restoredVendor => setVendors(v => v.map(x => x.id === id ? restoredVendor : x)))
+    .catch(e => {
+      if (previous) setVendors(items => items.map(item => item.id === id ? previous : item));
+      setToast({ msg: e.message || "Failed to restore vendor. The local change was rolled back.", type: "error" });
+    });
 };
 const hardDelete = async (id, name) => {
   if (!canDelete) return setToast({ msg: adminOnlyMessage(user), type: "error" });
-  try {
-    await deleteVendorInSupabase(id);
-    setVendors(v => v.filter(x => x.id !== id));
-    setToast({ msg: `Vendor "${name || "record"}" deleted permanently.`, type: "success" });
-    setConfirm(null);
-  } catch (e) {
-    setToast({ msg: e.message || "Failed to delete vendor.", type: "error" });
-  }
+  const previous = vendors.find(item => item.id === id);
+  setVendors(v => v.filter(x => x.id !== id));
+  setToast({ msg: `Vendor "${name || "record"}" deleted permanently.`, type: "success" });
+  setConfirm(null);
+  deleteVendorInSupabase(id).catch(e => {
+    if (previous) setVendors(items => [previous, ...items.filter(item => item.id !== id)]);
+    setToast({ msg: e.message || "Failed to delete vendor. The local change was rolled back.", type: "error" });
+  });
 };
   const visible = viewMode === "archived" ? archivedOnly(vendors) : viewMode === "all" ? vendors : activeOnly(vendors);
   const filtered = visible.filter(v => `${v.name} ${v.type}`.toLowerCase().includes(search.toLowerCase()));
