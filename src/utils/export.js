@@ -48,6 +48,7 @@ export const sanitizeMPOForExport = (mpo) => ({
   month: escapeHtml(safeText(mpo?.month)),
   year: escapeHtml(safeText(mpo?.year)),
   vendorName: escapeHtml(safeText(mpo?.vendorName)),
+  vendorLocation: escapeHtml(safeText(mpo?.vendorLocation)),
   clientName: escapeHtml(safeText(mpo?.clientName)),
   brand: escapeHtml(safeText(mpo?.brand)),
   campaignName: escapeHtml(safeText(mpo?.campaignName)),
@@ -455,12 +456,14 @@ export const buildMPOPdf = (mpo) => {
 
 export const buildMPOHTML = (mpo) => {
   const {
-  mpoNo, date, month, year, vendorName, clientName, brand, campaignName,
+  mpoNo, date, month, year, vendorName, vendorLocation, clientName, brand, campaignName,
   agencyAddress, agencyEmail, agencyPhone, signedBy, signedTitle, signedSignature, preparedBy, preparedContact, preparedTitle, preparedSignature,
   spots, discPct, commPct, surchPct, surchLabel, transmitMsg, terms = DEFAULT_APP_SETTINGS.mpoTerms, vatPct = 7.5,
 } = mpo;
 
   const fmt = n => Number(n||0).toLocaleString("en-NG",{minimumFractionDigits:2,maximumFractionDigits:2});
+  const locationText = String(vendorLocation || "Nigeria").trim();
+  const recipientLocation = locationText.endsWith(".") ? locationText : `${locationText}.`;
 
 
   const MN   = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -704,6 +707,7 @@ export const buildMPOHTML = (mpo) => {
     .rec-box-right{width:62mm;min-height:26mm;flex-shrink:0;margin-left:auto}
     .rec-line{line-height:1.2;color:#000;font-size:6pt;font-family:Arial,Helvetica,sans-serif}
     .rec-line-bold{font-weight:700;font-size:6.5pt;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;color:#000}
+    .rec-line-location{text-transform:uppercase}
     .det-line{line-height:1.15;color:#000;font-size:5.5pt;font-family:Arial,Helvetica,sans-serif;margin-bottom:0.5mm}
     .det-lbl{font-weight:700;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif}
     .det-val{font-weight:400;font-family:Arial,Helvetica,sans-serif}
@@ -746,7 +750,7 @@ export const buildMPOHTML = (mpo) => {
     <div class="rec-box rec-box-left">
       <div class="rec-line rec-line-bold">THE COMMERCIAL MANAGER,</div>
       <div class="rec-line">${(vendorName||"—").toUpperCase()} MEDIA SALES,</div>
-      <div class="rec-line">LAGOS.</div>
+      <div class="rec-line rec-line-location">${recipientLocation}</div>
     </div>
     <!-- RIGHT BOX: Client Details -->
     <div class="rec-box rec-box-right">

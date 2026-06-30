@@ -2166,6 +2166,7 @@ const buildImportedMpoRecord = ({ group, campaign, client, vendor, rates = [], u
     transmitMsg: `PLEASE TRANSMIT SPOTS ON ${vendor?.name || group.vendorName} AS SCHEDULED`,
     status: "draft",
     vendorName: vendor?.name || group.vendorName || "",
+    vendorLocation: vendor?.location || "",
     clientName: client?.name || "",
     campaignName: campaign?.name || "",
     brand: campaign?.brand || "",
@@ -3681,7 +3682,7 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
       );
       const existingExec = editId ? (mpos.find(m => m.id === editId) || {}) : {};
       const derivedMonths = deriveMonthsFromSpotRows(effectiveSpots, mpoData.months?.length ? mpoData.months : [mpoData.month]);
-      const record = { id: editId || uid(), ...mpoData, preparedSignature: mpoData.preparedSignature || user?.signatureDataUrl || "", signedSignature: mpoData.signedSignature || "", agencyEmail: mpoData.agencyEmail || user?.agencyEmail || "", agencyPhone: mpoData.agencyPhone || user?.agencyPhone || "", mpoNo: generatedMpoNo, vendorName: vendor?.name || "", clientName: client?.name || "", campaignName: campaign?.name || "", brand: campaign?.brand || "", medium: mpoData.medium || campaign?.medium || "", month: derivedMonths[0] || mpoData.month || "", months: derivedMonths, spots: effectiveSpots, totalSpots, totalGross, discPct, discAmt, lessDisc, commPct, commAmt: commAmt, afterComm, surchPct, surchAmt, surchLabel: surcharge.label, netVal, vatPct: VAT_RATE, vatAmt, grandTotal, terms: appSettings?.mpoTerms || DEFAULT_APP_SETTINGS.mpoTerms, roundToWholeNaira: !!appSettings?.roundToWholeNaira,
+      const record = { id: editId || uid(), ...mpoData, preparedSignature: mpoData.preparedSignature || user?.signatureDataUrl || "", signedSignature: mpoData.signedSignature || "", agencyEmail: mpoData.agencyEmail || user?.agencyEmail || "", agencyPhone: mpoData.agencyPhone || user?.agencyPhone || "", mpoNo: generatedMpoNo, vendorName: vendor?.name || "", vendorLocation: vendor?.location || "", clientName: client?.name || "", campaignName: campaign?.name || "", brand: campaign?.brand || "", medium: mpoData.medium || campaign?.medium || "", month: derivedMonths[0] || mpoData.month || "", months: derivedMonths, spots: effectiveSpots, totalSpots, totalGross, discPct, discAmt, lessDisc, commPct, commAmt: commAmt, afterComm, surchPct, surchAmt, surchLabel: surcharge.label, netVal, vatPct: VAT_RATE, vatAmt, grandTotal, terms: appSettings?.mpoTerms || DEFAULT_APP_SETTINGS.mpoTerms, roundToWholeNaira: !!appSettings?.roundToWholeNaira,
         dispatchStatus: existingExec.dispatchStatus || "pending",
         dispatchedAt: existingExec.dispatchedAt || null,
         dispatchedBy: existingExec.dispatchedBy || null,
@@ -3893,7 +3894,8 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
         console.error("Failed to refresh MPO before preview:", error);
       }
     }
-    const safeMpo = sanitizeMPOForExport({ ...previewSource, preparedSignature: previewSource?.preparedSignature || user?.signatureDataUrl || "", signedSignature: previewSource?.signedSignature || "", agencyEmail: previewSource?.agencyEmail || user?.agencyEmail || "", agencyPhone: previewSource?.agencyPhone || user?.agencyPhone || "" });
+    const previewVendor = vendors.find(item => String(item.id || "") === String(previewSource?.vendorId || ""));
+    const safeMpo = sanitizeMPOForExport({ ...previewSource, vendorLocation: previewSource?.vendorLocation || previewVendor?.location || "", preparedSignature: previewSource?.preparedSignature || user?.signatureDataUrl || "", signedSignature: previewSource?.signedSignature || "", agencyEmail: previewSource?.agencyEmail || user?.agencyEmail || "", agencyPhone: previewSource?.agencyPhone || user?.agencyPhone || "" });
     const html = buildMPOHTML(safeMpo);
     const pdfBytes = buildMpoPdfBytes(safeMpo);
     const csvHeaders = ["Programme","WD","Time Belt","Material","Duration","Rate/Spot","Spots","Gross Value"];
