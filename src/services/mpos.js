@@ -359,6 +359,62 @@ export const fetchMappedMpoByAgencyAndNo = async (agencyId, mpoNo) => {
   return mapMpoFromSupabase(parent, (spotRows || []).map(mapMpoSpotFromSupabase));
 };
 
+const isDuplicateMpoNumberError = (error) => {
+  const message = String(error?.message || error || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+  return code === "23505"
+    || message.includes("mpos_agency_mpo_no_unique")
+    || message.includes("duplicate key value");
+};
+
+const normalizeMpoNoCandidate = (value = "") => String(value || "").trim().toLowerCase();
+
+const incrementMpoNoCandidate = (mpoNo = "", step = 1) => {
+  const raw = String(mpoNo || "").trim();
+  if (!raw) return "";
+
+  const direct = raw.match(/^([A-Za-z]+)(\d+)(.*)$/);
+  if (direct) {
+    const [, prefix, numeric, suffix] = direct;
+    return `${prefix}${String((Number(numeric) || 0) + step).padStart(numeric.length, "0")}${suffix}`;
+  }
+
+  const numericMatches = Array.from(raw.matchAll(/\d+/g));
+  const preferred = numericMatches.find((match) => match[0].length <= 5 && Number(match[0]) < 10000) || numericMatches[0];
+  if (!preferred) return `${raw}-${String(step + 1).padStart(2, "0")}`;
+
+  const numeric = preferred[0];
+  const start = preferred.index || 0;
+  const nextNumber = String((Number(numeric) || 0) + step).padStart(numeric.length, "0");
+  return `${raw.slice(0, start)}${nextNumber}${raw.slice(start + numeric.length)}`;
+};
+
+const buildFallbackMpoNo = (brand = "MPO", sequence = 1) => {
+  const prefix = (brand || "MPO").replace(/\s+/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || "MPO";
+  const monthNames = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+  const now = new Date();
+  return `${prefix}${String(Math.max(1, Number(sequence) || 1)).padStart(3, "0")}-${monthNames[now.getMonth()]}${String(now.getFullYear()).slice(-2)}`;
+};
+
+const getNextMpoNoCandidate = async ({ brand, previousCandidate, usedCandidates, attempt }) => {
+  let candidate = "";
+  try {
+    candidate = await generateNextMpoNoFromSupabase(brand || "MPO");
+  } catch (error) {
+    console.warn("Failed to generate MPO number from Supabase; falling back locally:", error);
+  }
+
+  if (!candidate || usedCandidates.has(normalizeMpoNoCandidate(candidate))) {
+    candidate = incrementMpoNoCandidate(previousCandidate, 1) || buildFallbackMpoNo(brand, attempt + 1);
+  }
+
+  while (candidate && usedCandidates.has(normalizeMpoNoCandidate(candidate))) {
+    candidate = incrementMpoNoCandidate(candidate, 1) || buildFallbackMpoNo(brand, attempt + usedCandidates.size + 1);
+  }
+
+  return candidate || buildFallbackMpoNo(brand, attempt + 1);
+};
+
 const deleteMpoAttachmentsFromSupabase = async (agencyId, mpoId) => {
   if (!agencyId || !mpoId) return;
 
@@ -399,7 +455,7 @@ export const fetchMposFromSupabase = async (agencyId) => {
   return (mpoRows || []).map((row) => mapMpoFromSupabase(row, spotsByMpo[row.id] || []));
 };
 
-export const createMpoInSupabase = async (agencyId, userId, record) => {
+const insertMpoInSupabase = async (agencyId, userId, record) => {
   if (!agencyId) throw new Error("No agency found for this user.");
   const parentPayload = {
     agency_id: agencyId,
@@ -480,6 +536,32 @@ export const createMpoInSupabase = async (agencyId, userId, record) => {
   }
 
   return mapMpoFromSupabase(parent, mappedSpots);
+};
+
+export const createMpoInSupabase = async (agencyId, userId, record) => {
+  const brand = record?.brand || record?.campaignName || "MPO";
+  const usedCandidates = new Set();
+  let candidate = record?.mpoNo || "";
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    if (!candidate) {
+      candidate = await getNextMpoNoCandidate({ brand, previousCandidate: candidate, usedCandidates, attempt });
+    }
+
+    usedCandidates.add(normalizeMpoNoCandidate(candidate));
+
+    try {
+      return await insertMpoInSupabase(agencyId, userId, { ...record, mpoNo: candidate });
+    } catch (error) {
+      lastError = error;
+      if (!isDuplicateMpoNumberError(error)) throw error;
+
+      candidate = await getNextMpoNoCandidate({ brand, previousCandidate: candidate, usedCandidates, attempt });
+    }
+  }
+
+  throw lastError || new Error("Could not generate a unique MPO number. Refresh MPOs and try again.");
 };
 
 export const updateMpoInSupabase = async (mpoId, record) => {
