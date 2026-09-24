@@ -2990,7 +2990,8 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
     agencyEmail: user?.agencyEmail || "",
     agencyPhone: user?.agencyPhone || "",
     transmitMsg: "", status: "draft",
-    discountOverridePct: ""
+    discountOverridePct: "",
+    commissionOverridePct: ""
   });
 
   const [mpoData, setMpoData] = useState(() => blankMPO("", mpos));
@@ -3177,7 +3178,11 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
   const parsedDiscountOverride = parseFloat(mpoData?.discountOverridePct);
   const discountOverridePct = Number.isFinite(parsedDiscountOverride) ? Math.max(0, parsedDiscountOverride) / 100 : null;
   const discPct = hasDiscountOverride ? (discountOverridePct ?? 0) : vendorDiscPct;
-  const commPct = vendor ? (parseFloat(vendor.commission) || 0) / 100 : 0;
+  const vendorCommPct = vendor ? (parseFloat(vendor.commission) || 0) / 100 : 0;
+  const hasCommissionOverride = String(mpoData?.commissionOverridePct ?? "").trim() !== "";
+  const parsedCommissionOverride = parseFloat(mpoData?.commissionOverridePct);
+  const commissionOverridePct = Number.isFinite(parsedCommissionOverride) ? Math.max(0, parsedCommissionOverride) / 100 : null;
+  const commPct = hasCommissionOverride ? (commissionOverridePct ?? 0) : vendorCommPct;
   const discAmt = roundMoneyValue(totalGross * discPct, appSettings);
   const lessDisc = roundMoneyValue(totalGross - discAmt, appSettings);
   const commAmt = roundMoneyValue(lessDisc * commPct, appSettings);
@@ -3588,7 +3593,8 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
       agencyAddress: mpo.agencyAddress||user?.agencyAddress||"",
       transmitMsg: mpo.transmitMsg||"",
       status: mpo.status||"draft",
-      discountOverridePct: mpo?.discPct !== undefined && mpo?.discPct !== null ? String((Number(mpo.discPct) || 0) * 100) : ""
+      discountOverridePct: mpo?.discPct !== undefined && mpo?.discPct !== null ? String((Number(mpo.discPct) || 0) * 100) : "",
+      commissionOverridePct: mpo?.commPct !== undefined && mpo?.commPct !== null ? String((Number(mpo.commPct) || 0) * 100) : ""
     });
     setSurcharge({ pct: mpo.surchPct ? String((mpo.surchPct||0)*100) : "", label: mpo.surchLabel||"" });
     setSpots(normalizedSpots);
@@ -5407,7 +5413,8 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
                   ["Total Gross Value", fmtN(totalGross), "var(--accent)", true],
                   ["Volume Discount", `(${fmtN(discAmt)})`, "var(--red)", false, "discount"],
                   ["Less Discount", fmtN(lessDisc), "var(--text)", false, "text"],
-                  ...(commPct > 0 ? [[`Agency Commission (${(commPct * 100).toFixed(0)}%)`, `(${fmtN(commAmt)})`, "var(--red)", false], ["After Commission", fmtN(afterComm), "var(--text)", false]] : []),
+                  ["Agency Commission", `(${fmtN(commAmt)})`, "var(--red)", false, "commission"],
+                  ...(commPct > 0 ? [["After Commission", fmtN(afterComm), "var(--text)", false]] : []),
                   ...(surchPct > 0 ? [[surcharge.label || `Surcharge (${(surchPct * 100).toFixed(0)}%)`, `+${fmtN(surchAmt)}`, "var(--orange)", false]] : []),
                   ["Net Value", fmtN(netVal), "var(--green)", true],
                   [`VAT (${VAT_RATE}%)`, fmtN(vatAmt), "var(--text)", false]
@@ -5434,6 +5441,28 @@ function MPOPage({ vendors, clients, campaigns, rates, mpos, setMpos, setVendors
                           Use Default
                         </button>
                         <span style={{ fontSize: 11, color: "var(--text3)" }}>Applied: {(discPct * 100).toFixed(2).replace(/\.00$/, "")}%</span>
+                      </div>
+                    ) : rowType === "commission" ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, color: "var(--text2)" }}>Agency Commission</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={mpoData.commissionOverridePct ?? ""}
+                          onChange={e => setMpoData(m => ({ ...m, commissionOverridePct: e.target.value }))}
+                          placeholder={String((vendorCommPct * 100).toFixed(0))}
+                          style={{ width: 92, background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 8, padding: "6px 8px", color: "var(--text)", fontSize: 12, outline: "none" }}
+                        />
+                        <span style={{ fontSize: 12, color: "var(--text3)" }}>%</span>
+                        <button
+                          type="button"
+                          onClick={() => setMpoData(m => ({ ...m, commissionOverridePct: vendor ? String(parseFloat(vendor.commission) || 0) : "0" }))}
+                          style={{ border: "1px solid var(--border2)", background: "var(--bg2)", borderRadius: 999, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: "var(--text2)", cursor: "pointer" }}
+                        >
+                          Use Default
+                        </button>
+                        <span style={{ fontSize: 11, color: "var(--text3)" }}>Applied: {(commPct * 100).toFixed(2).replace(/\.00$/, "")}%</span>
                       </div>
                     ) : (
                       <span style={{ fontSize: 13, color: "var(--text2)" }}>{l}</span>
