@@ -27,13 +27,20 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
   const unreconciledCount = liveMpos.filter(m => (m.reconciliationStatus || "not_started") !== "completed").length;
   const pendingPaymentCount = liveMpos.filter(m => ["received", "approved", "disputed"].includes(m.invoiceStatus || "pending") && (m.paymentStatus || "unpaid") !== "paid").length;
   const pendingProofCount = liveMpos.filter(m => !["received"].includes(m.proofStatus || "pending")).length;
-  const recent = [...liveMpos].sort((a, b) => b.createdAt - a.createdAt).slice(0, 4);
+  const recent = [...liveMpos].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
   const myWorkflowQueue = [...liveMpos].filter(m => isMpoAwaitingUser(user, m)).sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)).slice(0, 4);
   const readyForDispatch = liveMpos.filter(m => String(m.status || "draft").toLowerCase() === "approved").length;
   const needsRevision = liveMpos.filter(m => String(m.status || "draft").toLowerCase() === "rejected").length;
   const recentNotifications = (notifications || []).slice(0, 5);
   const topVendors = Object.values(liveMpos.reduce((acc, mpo) => {
     const key = mpo.vendorName || "Unknown Vendor";
+    acc[key] = acc[key] || { name: key, spend: 0, count: 0 };
+    acc[key].spend += parseFloat(mpo.netVal) || 0;
+    acc[key].count += 1;
+    return acc;
+  }, {})).sort((a, b) => b.spend - a.spend).slice(0, 4);
+  const topClients = Object.values(liveMpos.reduce((acc, mpo) => {
+    const key = mpo.clientName || "Unassigned Client";
     acc[key] = acc[key] || { name: key, spend: 0, count: 0 };
     acc[key].spend += parseFloat(mpo.netVal) || 0;
     acc[key].count += 1;
@@ -93,7 +100,7 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
         <Stat icon="✅" label="My Queue" value={myWorkflowQueue.length} sub={`${readyForDispatch} approved · ${needsRevision} need changes`} color="var(--blue)" />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr .95fr", gap: 18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr .95fr", gap: 18, alignItems: "start" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           <Card>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
@@ -156,6 +163,53 @@ const Dashboard = ({ user, vendors, clients, campaigns, rates, mpos, notificatio
                   </div>
                 ))}
               </div>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15 }}>Client Spend Snapshot</h2>
+              <Btn variant="ghost" size="sm" onClick={() => setPage("clients")}>Open clients →</Btn>
+            </div>
+            {topClients.length === 0 ? (
+              <Empty icon="👥" title="No client spend yet" sub="Client spend distribution appears once MPOs are issued." />
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 16 }}>
+                  <div style={{ padding: "14px 16px", borderRadius: 12, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 6 }}>Active Clients</div>
+                    <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24 }}>{liveClients.length}</div>
+                    <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 6 }}>{topClients.length} with issued MPOs</div>
+                  </div>
+                  <div style={{ padding: "14px 16px", borderRadius: 12, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 6 }}>Highest Client Spend</div>
+                    <div title={fmtN(topClients[0]?.spend || 0)} style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(18px,2vw,24px)", color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fmtN(topClients[0]?.spend || 0)}</div>
+                    <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{topClients[0]?.name || "No client yet"}</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {topClients.map((client) => {
+                    const share = totalMPOValue > 0 ? Math.min(100, Math.round((client.spend / totalMPOValue) * 100)) : 0;
+                    return (
+                      <div key={client.name} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "center", padding: "12px 14px", borderRadius: 12, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", marginBottom: 8 }}>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{client.name}</div>
+                            <div style={{ fontSize: 11, color: "var(--text2)", flexShrink: 0 }}>{client.count} MPO{client.count !== 1 ? "s" : ""}</div>
+                          </div>
+                          <div style={{ height: 8, background: "var(--bg2)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)" }}>
+                            <div style={{ width: `${share}%`, height: "100%", background: "linear-gradient(90deg,var(--blue),var(--teal))" }} />
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", minWidth: 108 }}>
+                          <div style={{ fontWeight: 800, color: "var(--text)", fontSize: 13 }}>{fmtN(client.spend)}</div>
+                          <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 3 }}>{share}% of spend</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </Card>
         </div>

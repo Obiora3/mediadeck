@@ -16,7 +16,7 @@ import {
 import { DEFAULT_SESSION_HOURS, DEFAULT_APP_SETTINGS } from "../constants/appDefaults";
 import { persistSignatureForUser, updateProfileInSupabase } from "../services/users";
 import { updateAgencyInSupabase, updateAgencyMemberRoleInSupabase } from "../services/agencies";
-import { changePasswordInSupabase } from "../services/auth";
+import { changePasswordWithCurrentPasswordInSupabase } from "../services/auth";
 import {
   createAuditEventInSupabase,
   fetchAuditEventsForAgency,
@@ -266,7 +266,11 @@ const SettingsPage = ({ user, onUserUpdate, onLogout, appSettings, setAppSetting
     if (sf.newPw.length < 6) return setToast({ msg: "New password must be at least 6 characters.", type: "error" });
     if (sf.newPw !== sf.confirm) return setToast({ msg: "New passwords do not match.", type: "error" });
     try {
-      await changePasswordInSupabase(sf.newPw);
+      await changePasswordWithCurrentPasswordInSupabase({
+        email: user.email,
+        currentPassword: sf.current,
+        newPassword: sf.newPw,
+      });
       setSf({ current: "", newPw: "", confirm: "" });
       createAuditEventInSupabase({
         agencyId: user.agencyId,

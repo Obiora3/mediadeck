@@ -2,6 +2,201 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { normalizeAgencyCode, findExistingAgencyByName } from "../../services/agencies";
 
+/* ── XLSX loader (same CDN pattern as MPOPage) ──────────────── */
+const loadSheetJS = () => new Promise((resolve, reject) => {
+  if (window.XLSX) return resolve(window.XLSX);
+  const s = document.createElement("script");
+  s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+  s.onload = () => resolve(window.XLSX);
+  s.onerror = reject;
+  document.head.appendChild(s);
+});
+
+/* ── IMPORT MPO MODAL ───────────────────────────────────────── */
+const ImportMPOModal = ({ onClose, onConfirm }) => {
+  const [file, setFile] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [parsing, setParsing] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [parseErr, setParseErr] = useState("");
+  const [autoCreateRO, setAutoCreateRO] = useState(false);
+
+  const handleFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFileName(f.name);
+    setFile(f);
+    setParsing(true);
+    setParseErr("");
+    setSummary(null);
+    try {
+      const XLSX = await loadSheetJS();
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheetName = wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
+      const nonEmpty = rows.filter((r) => r.some((c) => c !== ""));
+      const columns = Math.max(...nonEmpty.map((r) => r.filter((c) => c !== "").length));
+
+      const vendorSet = new Set();
+      nonEmpty.forEach((r) => {
+        const cell = String(r[0] || "").trim();
+        if (cell && !/^\d+$/.test(cell) && cell.length > 2 && cell.length < 60) {
+          vendorSet.add(cell);
+        }
+      });
+      const vendorList = [...vendorSet].slice(0, 5);
+
+      setSummary({
+        rows: nonEmpty.length,
+        columns,
+        vendors: vendorSet.size,
+        vendorList,
+        sheetName,
+        totalSheets: wb.SheetNames.length,
+      });
+    } catch {
+      setParseErr("Could not parse file. Make sure it is a valid Excel spreadsheet (.xlsx / .xls).");
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const S = { fontFamily: "'Inter', sans-serif" };
+  const H = { fontFamily: "'Plus Jakarta Sans', sans-serif" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,10,24,.55)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(4px)" }}>
+      <div style={{ background: "#fff", borderRadius: 22, width: "100%", maxWidth: 500, boxShadow: "0 28px 70px rgba(0,0,0,.22)", overflow: "hidden" }}>
+
+        {/* Header */}
+        <div style={{ padding: "22px 24px 18px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ ...H, fontWeight: 800, fontSize: 17, color: "#0f172a" }}>Import MPO Spreadsheet</div>
+            <div style={{ ...S, fontSize: 13, color: "#94a3b8", marginTop: 3 }}>Upload your media plan to import draft MPOs once your workspace is ready.</div>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, color: "#94a3b8", cursor: "pointer", lineHeight: 1, padding: 0, flexShrink: 0 }}>×</button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Drop zone */}
+          <div>
+            <label style={{ ...S, fontSize: 13, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 8 }}>Excel File <span style={{ color: "#ef4444" }}>*</span></label>
+            <label style={{
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              background: "#f8fafc", border: "2px dashed #e2e8f0", borderRadius: 14,
+              padding: "22px 16px", textAlign: "center", cursor: "pointer", transition: "border-color .18s",
+            }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#f0a500"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; }}
+            >
+              <input type="file" accept=".xlsx,.xls" onChange={handleFile} style={{ display: "none" }} />
+              {fileName ? (
+                <>
+                  <span style={{ fontSize: 26, marginBottom: 6 }}>📄</span>
+                  <span style={{ ...H, fontWeight: 700, color: "#0f172a", fontSize: 14 }}>{fileName}</span>
+                  <span style={{ ...S, color: "#94a3b8", fontSize: 12, marginTop: 3 }}>Click to change file</span>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: 28, marginBottom: 6 }}>📤</span>
+                  <span style={{ ...H, fontWeight: 700, color: "#475569", fontSize: 14 }}>Click to upload media plan</span>
+                  <span style={{ ...S, color: "#94a3b8", fontSize: 12, marginTop: 3 }}>Supports .xlsx and .xls files</span>
+                </>
+              )}
+            </label>
+          </div>
+
+          {/* Parsing */}
+          {parsing && (
+            <div style={{ ...S, textAlign: "center", color: "#f0a500", fontSize: 13, fontWeight: 600 }}>
+              <span style={{ animation: "spin 1s linear infinite", display: "inline-block", marginRight: 6 }}>⟳</span>
+              Parsing spreadsheet…
+            </div>
+          )}
+          {parseErr && <div style={{ ...S, color: "#dc2626", fontSize: 13, background: "rgba(239,68,68,.06)", border: "1px solid rgba(239,68,68,.2)", borderRadius: 10, padding: "10px 14px" }}>{parseErr}</div>}
+
+          {/* Summary */}
+          {summary && (
+            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 14, padding: "16px" }}>
+              <div style={{ ...H, fontWeight: 800, fontSize: 13, color: "#0f172a", marginBottom: 12 }}>Import Details</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+                {[
+                  ["Data Rows", summary.rows],
+                  ["Columns", summary.columns],
+                  ["Vendors Found", summary.vendors],
+                  ["Sheet", summary.sheetName],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ background: "#fff", borderRadius: 10, padding: "10px 12px", border: "1px solid #f1f5f9" }}>
+                    <div style={{ ...S, fontSize: 10, color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</div>
+                    <div style={{ ...H, fontSize: 16, fontWeight: 800, color: "#0f172a", marginTop: 3 }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+              {summary.vendorList.length > 0 && (
+                <div>
+                  <div style={{ ...S, fontSize: 10, color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>Detected Vendors (preview)</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {summary.vendorList.map((v) => (
+                      <span key={v} style={{ ...S, background: "rgba(240,165,0,.1)", border: "1px solid rgba(240,165,0,.28)", borderRadius: 999, padding: "3px 11px", fontSize: 12, color: "#92610a", fontWeight: 600 }}>{v}</span>
+                    ))}
+                    {summary.vendors > summary.vendorList.length && (
+                      <span style={{ ...S, fontSize: 12, color: "#94a3b8", alignSelf: "center" }}>+{summary.vendors - summary.vendorList.length} more</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Auto-create RO */}
+          <div style={{ background: "rgba(59,126,245,.04)", border: "1px solid rgba(59,126,245,.16)", borderRadius: 14, padding: "14px 16px" }}>
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={autoCreateRO}
+                onChange={(e) => setAutoCreateRO(e.target.checked)}
+                style={{ accentColor: "#f0a500", width: 16, height: 16, marginTop: 2, flexShrink: 0 }}
+              />
+              <div>
+                <div style={{ ...H, fontWeight: 700, fontSize: 13, color: "#0f172a" }}>Auto-create Release Orders (RO)</div>
+                <div style={{ ...S, fontSize: 12, color: "#64748b", marginTop: 4, lineHeight: 1.65 }}>
+                  Automatically generate a Release Order for each imported MPO once your workspace is set up. ROs authorize media spend and are sent to vendors.
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "0 24px 22px", display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ flex: 1, background: "#f5f7fc", border: "none", borderRadius: 999, padding: "13px", fontSize: 14, fontWeight: 700, color: "#475569", cursor: "pointer", fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm({ file, fileName, autoCreateRO, summary })}
+            disabled={!file || parsing}
+            style={{
+              flex: 2, border: "none", borderRadius: 999, padding: "13px",
+              fontSize: 14, fontWeight: 800,
+              background: file && !parsing ? "#f0a500" : "#e2e8f0",
+              color: file && !parsing ? "#000" : "#94a3b8",
+              cursor: file && !parsing ? "pointer" : "not-allowed",
+              fontFamily: "'Plus Jakarta Sans', sans-serif",
+              transition: "background .18s",
+            }}
+          >
+            {file ? `Attach Import${autoCreateRO ? " + Auto RO" : ""}` : "Upload a file first"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* ── ICONS ─────────────────────────────────────────────────── */
 const EyeIcon = ({ crossed = false }) => (
   <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -188,20 +383,30 @@ const RightPanel = ({ mode }) => {
 };
 
 /* ── MAIN ───────────────────────────────────────────────────── */
-const AuthPage = ({ onLogin, sessionExpired = false }) => {
-  const [mode, setMode] = useState("login");
+const AuthPage = ({
+  onLogin,
+  sessionExpired = false,
+  initialMode = "login",
+  initialInfo = "",
+  recoveryOnly = false,
+  onPasswordResetComplete,
+  onCancelRecovery,
+}) => {
+  const [mode, setMode] = useState(initialMode);
   const [f, setF] = useState({
     name: "", email: "", password: "", agency: "",
     agencyCode: "", agencyMode: "create", title: "", phone: "", confirm: "",
   });
   const [err, setErr] = useState("");
-  const [info, setInfo] = useState("");
+  const [info, setInfo] = useState(initialInfo);
   const [loading, setLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [existingAgencyMatch, setExistingAgencyMatch] = useState(null);
   const [agencyCheckLoading, setAgencyCheckLoading] = useState(false);
   const [visiblePasswords, setVisiblePasswords] = useState({ password: false, confirm: false });
   const [rememberMe, setRememberMe] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importAttached, setImportAttached] = useState(null); // { fileName, autoCreateRO, summary }
 
   const isRecoveryMode = mode === "recovery";
   const isRegisterMode = mode === "register";
@@ -224,6 +429,13 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
   const togglePw = (key) => setVisiblePasswords((p) => ({ ...p, [key]: !p[key] }));
 
   useEffect(() => {
+    setMode(initialMode);
+    setErr("");
+    setInfo(initialInfo || "");
+    setVisiblePasswords({ password: false, confirm: false });
+  }, [initialMode, initialInfo]);
+
+  useEffect(() => {
     const prev = { html: document.documentElement.style.backgroundColor, body: document.body.style.backgroundColor };
     const root = document.getElementById("root");
     const prevRoot = root?.style.backgroundColor || "";
@@ -240,8 +452,11 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
 
   useEffect(() => {
     const hash = window.location.hash || "";
-    const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
-    if (params.get("type") === "recovery") { setMode("recovery"); setInfo("Enter your new password to complete the reset."); }
+    const hashParams = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+    const searchParams = new URLSearchParams(window.location.search);
+    const isResetRoute = window.location.pathname === "/reset-password";
+    const isRecoveryLink = isResetRoute || hashParams.get("type") === "recovery" || searchParams.get("type") === "recovery";
+    if (isRecoveryLink) { setMode("recovery"); setInfo("Enter your new password to complete the reset."); }
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === "PASSWORD_RECOVERY") { setMode("recovery"); setInfo("Enter your new password to complete the reset."); }
     });
@@ -271,7 +486,7 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
     if (!f.email.trim()) { setErr("Enter your email first, then click Forgot password."); return; }
     setResetLoading(true);
     try {
-      const redirectTo = `${window.location.origin}${window.location.pathname}`;
+      const redirectTo = `${window.location.origin}/reset-password`;
       const { error } = await supabase.auth.resetPasswordForEmail(f.email.trim(), { redirectTo });
       if (error) throw error;
       setInfo("Reset email sent. Check your inbox.");
@@ -311,10 +526,20 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
       } else if (mode === "recovery") {
         const { error } = await supabase.auth.updateUser({ password: f.password });
         if (error) throw error;
-        setInfo("Password updated. Sign in with your new password.");
+        const successMessage = "Password updated. Sign in with your new password.";
+        try {
+          await supabase.auth.signOut({ scope: "local" });
+        } catch (signOutError) {
+          console.error("Failed to clear recovery session:", signOutError);
+        }
+        setInfo(successMessage);
         setMode("login");
         setF((p) => ({ ...p, password: "", confirm: "" }));
-        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        if (typeof onPasswordResetComplete === "function") {
+          onPasswordResetComplete(successMessage);
+        } else {
+          window.history.replaceState({}, document.title, "/");
+        }
       } else {
         const { data, error } = await supabase.auth.signUp({
           email: f.email, password: f.password,
@@ -322,7 +547,12 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
         });
         if (error) throw error;
         if (!data.user) throw new Error("Signup failed.");
-        const { error: profileError } = await supabase.from("profiles").update({ full_name: f.name, title: f.title || "", phone: f.phone || "" }).eq("id", data.user.id);
+        const { error: profileError } = await supabase.from("profiles").update({
+          full_name: f.name,
+          title: f.title || "",
+          phone: f.phone || "",
+          ...(importAttached ? { mpo_import_pending: true, auto_create_ro: importAttached.autoCreateRO } : {}),
+        }).eq("id", data.user.id);
         if (profileError) throw profileError;
         if (!data.session) { setInfo("Account created! Check your email to confirm, then sign in."); setMode("login"); }
       }
@@ -335,6 +565,11 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
     setVisiblePasswords({ password: false, confirm: false });
     if (next !== "register") { setExistingAgencyMatch(null); setAgencyCheckLoading(false); }
     if (next === "login") setF((p) => ({ ...p, password: "", confirm: "" }));
+  };
+
+  const goToLogin = () => {
+    switchMode("login");
+    if (recoveryOnly && typeof onCancelRecovery === "function") onCancelRecovery();
   };
 
   const submitLabel = mode === "login" ? "Sign In"
@@ -397,7 +632,7 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
           </div>
 
           {/* Session expired */}
-          {sessionExpired && (
+          {sessionExpired && !isRecoveryMode && (
             <div style={{ background: "rgba(240,165,0,.08)", border: "1px solid rgba(240,165,0,.3)", borderRadius: 12, padding: "11px 16px", marginBottom: 20, fontSize: 13, color: "#92610a", lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
               Your session expired. Sign in again to continue.
             </div>
@@ -493,16 +728,17 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
               </>
             )}
 
-            {/* Email */}
-            <PillInput
-              label="Email"
-              type="email"
-              value={f.email}
-              onChange={u("email")}
-              placeholder="Enter your email"
-              required
-              autoComplete="email"
-            />
+            {!isRecoveryMode && (
+              <PillInput
+                label="Email"
+                type="email"
+                value={f.email}
+                onChange={u("email")}
+                placeholder="Enter your email"
+                required
+                autoComplete="email"
+              />
+            )}
 
             {/* Password */}
             <PillPassword
@@ -550,7 +786,7 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
             {isRecoveryMode && (
               <button
                 type="button"
-                onClick={() => switchMode("login")}
+                onClick={goToLogin}
                 style={{ background: "none", border: "none", color: "#f0a500", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 0, textAlign: "left" }}
               >
                 ← Back to sign in
@@ -566,6 +802,52 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
             {err && (
               <div style={{ background: "rgba(239,68,68,.06)", border: "1px solid rgba(239,68,68,.2)", borderRadius: 12, padding: "11px 16px", color: "#dc2626", fontSize: 13, lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
                 {err}
+              </div>
+            )}
+
+            {/* Import MPO option (register mode only) */}
+            {isRegisterMode && (
+              <div>
+                {importAttached ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(240,165,0,.08)", border: "1px solid rgba(240,165,0,.28)", borderRadius: 12, padding: "11px 14px" }}>
+                    <span style={{ fontSize: 18 }}>📋</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                        MPO import attached
+                        {importAttached.autoCreateRO && <span style={{ marginLeft: 8, background: "#f0a500", color: "#000", fontSize: 10, fontWeight: 800, borderRadius: 999, padding: "2px 8px", verticalAlign: "middle" }}>Auto RO</span>}
+                      </div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#64748b", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {importAttached.fileName} · {importAttached.summary?.rows ?? "?"} rows · {importAttached.summary?.vendors ?? "?"} vendors
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setImportAttached(null)}
+                      style={{ border: "none", background: "none", color: "#94a3b8", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 0, flexShrink: 0 }}
+                    >×</button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowImportModal(true)}
+                    style={{
+                      width: "100%", background: "#f8fafc", border: "1.5px dashed #e2e8f0",
+                      borderRadius: 12, padding: "12px 16px",
+                      display: "flex", alignItems: "center", gap: 10,
+                      cursor: "pointer", transition: "border-color .18s",
+                      fontFamily: "'Plus Jakarta Sans', sans-serif",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#f0a500"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; }}
+                  >
+                    <span style={{ fontSize: 18 }}>📥</span>
+                    <div style={{ textAlign: "left" }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>Import existing MPO spreadsheet</div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Optional — upload a media plan to import after setup</div>
+                    </div>
+                    <span style={{ marginLeft: "auto", fontSize: 14, color: "#94a3b8" }}>›</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -634,7 +916,7 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
                 {mode === "login" ? "Don't have an account? " : mode === "recovery" ? "Back to " : "Already have an account? "}
                 <button
                   type="button"
-                  onClick={() => switchMode(mode === "login" ? "register" : "login")}
+                  onClick={() => { if (mode === "recovery") goToLogin(); else switchMode(mode === "login" ? "register" : "login"); }}
                   style={{ background: "none", border: "none", color: "#f0a500", fontWeight: 700, fontSize: 13, cursor: "pointer", padding: 0, fontFamily: "'Inter', sans-serif" }}
                 >
                   {mode === "login" ? "Sign up" : "Sign In"}
@@ -648,6 +930,17 @@ const AuthPage = ({ onLogin, sessionExpired = false }) => {
         {/* ── RIGHT PANEL ── */}
         <RightPanel mode={mode} />
       </div>
+
+      {/* Import MPO modal */}
+      {showImportModal && (
+        <ImportMPOModal
+          onClose={() => setShowImportModal(false)}
+          onConfirm={(data) => {
+            setImportAttached(data);
+            setShowImportModal(false);
+          }}
+        />
+      )}
     </div>
   );
 };

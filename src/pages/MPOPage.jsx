@@ -101,6 +101,8 @@ const getPaidSpotCount = (spot = {}) => {
   return Math.max(0, total - getSpotBonusCount(spot));
 };
 
+const MAX_IMPORT_MPO_NO_RESERVATION_ATTEMPTS = 1000;
+
 const downloadMediaPlanImportCsv = (filename, headers, rows) => {
   const csv = buildCSV(rows, headers);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -2287,25 +2289,25 @@ const MediaPlanImportModal = ({ vendors = [], clients = [], campaigns = [], rate
 
   const reserveImportMpoNo = async ({ campaign, usedMpoNumberKeys, previousMpoNo = "", attempt = 1 }) => {
     const brand = campaign?.brand || "MPO";
-    let candidate = previousMpoNo
-      ? incrementMpoNoCandidate(previousMpoNo, 1)
-      : await runImportStepWithRetry(() => generateNextMpoNoFromSupabase(brand));
+    let candidate = previousMpoNo ? incrementMpoNoCandidate(previousMpoNo, 1) : "";
 
-    if (!candidate) candidate = buildFallbackImportMpoNo(brand, attempt);
+    if (!candidate) {
+      try {
+        candidate = await runImportStepWithRetry(() => generateNextMpoNoFromSupabase(brand));
+      } catch (error) {
+        console.warn("Failed to generate import MPO number from Supabase; falling back locally:", error);
+      }
+    }
 
-    for (let guard = 0; guard < 75; guard += 1) {
+    if (!candidate) candidate = buildFallbackImportMpoNo(brand, usedMpoNumberKeys.size + attempt + 1);
+
+    for (let guard = 0; guard < MAX_IMPORT_MPO_NO_RESERVATION_ATTEMPTS; guard += 1) {
       const key = normalizeMpoNoKey(candidate);
       if (key && !usedMpoNumberKeys.has(key)) {
-        const existing = await runImportStepWithRetry(
-          () => fetchMappedMpoByAgencyAndNo(user?.agencyId, candidate),
-          2
-        );
-        if (!existing) {
-          usedMpoNumberKeys.add(key);
-          return candidate;
-        }
+        usedMpoNumberKeys.add(key);
+        return candidate;
       }
-      candidate = incrementMpoNoCandidate(candidate, 1) || buildFallbackImportMpoNo(brand, attempt + guard + 1);
+      candidate = incrementMpoNoCandidate(candidate, 1) || buildFallbackImportMpoNo(brand, usedMpoNumberKeys.size + attempt + guard + 1);
     }
 
     throw new Error("Could not reserve a unique MPO number for this import. Refresh MPOs and try again.");

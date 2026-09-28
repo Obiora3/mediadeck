@@ -368,6 +368,7 @@ const isDuplicateMpoNumberError = (error) => {
 };
 
 const normalizeMpoNoCandidate = (value = "") => String(value || "").trim().toLowerCase();
+const MAX_MPO_NO_CREATE_ATTEMPTS = 100;
 
 const incrementMpoNoCandidate = (mpoNo = "", step = 1) => {
   const raw = String(mpoNo || "").trim();
@@ -544,7 +545,7 @@ export const createMpoInSupabase = async (agencyId, userId, record) => {
   let candidate = record?.mpoNo || "";
   let lastError = null;
 
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
+  for (let attempt = 1; attempt <= MAX_MPO_NO_CREATE_ATTEMPTS; attempt += 1) {
     if (!candidate) {
       candidate = await getNextMpoNoCandidate({ brand, previousCandidate: candidate, usedCandidates, attempt });
     }

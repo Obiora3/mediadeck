@@ -20,6 +20,7 @@ import ReportsPage from "./pages/ReportsPage";
 import SettingsPage from "./pages/SettingsPage";
 import FinancePage from "./pages/FinancePage";
 import MPOPage from "./pages/MPOPage";
+import CompliancePage from "./pages/CompliancePage";
 import PrintPreview from "./components/mpo/PrintPreview";
 import { buildCSV } from "./utils/export";
 import { themeKeyForUser, setStoredUserSignature, getDefaultTheme } from "./utils/session";
@@ -68,7 +69,6 @@ import {
   fetchAgencyMembersFromSupabase,
   updateAgencyMemberRoleInSupabase,
 } from "./services/agencies";
-import { changePasswordInSupabase } from "./services/auth";
 import {
   uploadMpoAttachmentAndGetUrl,
   fetchMposFromSupabase,
@@ -124,6 +124,12 @@ const looksLikeUuid = (value = "") =>
     String(value || "").trim()
   );
 const APP_VERSION = "2.3";
+const PASSWORD_RESET_PATH = "/reset-password";
+const normalizeAppPath = (pathname = "/") => {
+  const trimmed = String(pathname || "/").replace(/\/+$/, "");
+  return trimmed || "/";
+};
+const isPasswordResetPathname = (pathname = "/") => normalizeAppPath(pathname) === PASSWORD_RESET_PATH;
 const getAppSettings = () => mergeAppSettings(store.get("msp_app_settings", {}));
 const roundMoneyValue = (value, settings = getAppSettings()) => {
   const num = Number(value) || 0;
@@ -195,9 +201,12 @@ export default function App() {
 
   const [user, setUser] = useState(null);
   const [authUser, setAuthUser] = useState(null);
+  const [pathname, setPathname] = useState(() => window.location.pathname);
+  const [passwordRecoveryActive, setPasswordRecoveryActive] = useState(() => isPasswordResetPathname(window.location.pathname));
+  const [authInfo, setAuthInfo] = useState("");
   const [page, setPage] = useState(() => {
     const p = new URLSearchParams(window.location.search).get("page");
-    const valid = ["dashboard","vendors","clients","campaigns","rates","finance","mpo","reports","settings"];
+    const valid = ["dashboard","vendors","clients","campaigns","rates","finance","mpo","compliance","reports","settings"];
     return valid.includes(p) ? p : "dashboard";
   });
   const [collapsed, setCollapsed] = useState(false);
@@ -206,6 +215,12 @@ export default function App() {
   useEffect(() => {
     setTheme(getDefaultTheme(user?.id || null));
   }, [user?.id]);
+
+  useEffect(() => {
+    const syncPathname = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", syncPathname);
+    return () => window.removeEventListener("popstate", syncPathname);
+  }, []);
 
   useEffect(() => {
     const root = document.getElementById("root");
@@ -343,6 +358,14 @@ export default function App() {
     _setAppSettings(getAppSettings());
   }, []);
 
+  const isPasswordRecoveryRoute = isPasswordResetPathname(pathname);
+  const isPasswordRecoveryView = passwordRecoveryActive || isPasswordRecoveryRoute;
+
+  const replaceAppPath = useCallback((nextPath) => {
+    window.history.replaceState({}, document.title, nextPath);
+    setPathname(window.location.pathname);
+  }, []);
+
   useEffect(() => {
     let mounted = true;
     const timeout = setTimeout(() => {
@@ -355,6 +378,13 @@ export default function App() {
         const { data } = await supabase.auth.getSession();
         if (!mounted) return;
         recordAuthDiagnostic("bootstrap_session", summarizeAuthSession(data?.session));
+        if (isPasswordRecoveryView) {
+          setPasswordRecoveryActive(true);
+          setSessionExpired(false);
+          resetWorkspaceState();
+          recordAuthDiagnostic("bootstrap_password_recovery_route", summarizeAuthSession(data?.session));
+          return;
+        }
         setAuthUser(data?.session?.user || null);
       } catch (error) {
         console.error("Failed to bootstrap auth:", error);
@@ -376,11 +406,18 @@ export default function App() {
         ...summarizeAuthSession(session),
       });
       flushAuthDiagnosticsForCurrentUser();
-      if (event === "SIGNED_OUT") {
+      if (event === "PASSWORD_RECOVERY") {
+        setPasswordRecoveryActive(true);
+        setSessionExpired(false);
+        setAuthInfo("");
+        resetWorkspaceState();
+        if (!isPasswordResetPathname(window.location.pathname)) replaceAppPath(PASSWORD_RESET_PATH);
+      } else if (event === "SIGNED_OUT") {
         setAuthUser(null);
-      } else if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "SIGNED_IN" || event === "PASSWORD_RECOVERY") {
+      } else if ((event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "SIGNED_IN") && !isPasswordRecoveryView) {
         if (session?.user) setAuthUser(session.user);
-      } else if (event === "INITIAL_SESSION") {
+        setAuthInfo("");
+      } else if (event === "INITIAL_SESSION" && !isPasswordRecoveryView) {
         setAuthUser(session?.user || null);
       }
       setAuthReady(true);
@@ -392,12 +429,20 @@ export default function App() {
       clearTimeout(timeout);
       subscription.unsubscribe();
     };
-  }, [flushAuthDiagnosticsForCurrentUser]);
+  }, [flushAuthDiagnosticsForCurrentUser, isPasswordRecoveryView, replaceAppPath, resetWorkspaceState]);
 
   useEffect(() => {
     let active = true;
 
     const hydrateUser = async () => {
+      if (isPasswordRecoveryView) {
+        if (active) {
+          setUser(null);
+          setAuthReady(true);
+        }
+        return;
+      }
+
       if (!authUser?.id) {
         if (active) {
           if (user?.id) {
@@ -463,7 +508,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [authUser?.id, resetWorkspaceState]);
+  }, [authUser?.id, isPasswordRecoveryView, resetWorkspaceState]);
 
   useEffect(() => {
     if (!user?.agencyId || !user?.id) return;
@@ -1097,6 +1142,8 @@ export default function App() {
       agencyId: user?.agencyId || "",
     });
     await flushAuthDiagnosticsForCurrentUser();
+    setPasswordRecoveryActive(false);
+    setAuthInfo("");
     setSessionExpired(false);
     resetWorkspaceState();
 
@@ -1106,6 +1153,23 @@ export default function App() {
       console.error("Failed to sign out:", e);
     }
   };
+
+  const handlePasswordResetComplete = useCallback((message) => {
+    setPasswordRecoveryActive(false);
+    setSessionExpired(false);
+    resetWorkspaceState();
+    setAuthInfo(message || "Password updated. Sign in with your new password.");
+    replaceAppPath("/");
+  }, [replaceAppPath, resetWorkspaceState]);
+
+  const handleCancelPasswordRecovery = useCallback(() => {
+    setPasswordRecoveryActive(false);
+    setSessionExpired(false);
+    resetWorkspaceState();
+    setAuthInfo("");
+    replaceAppPath("/");
+    supabase.auth.signOut({ scope: "local" }).catch(error => console.error("Failed to clear recovery session:", error));
+  }, [replaceAppPath, resetWorkspaceState]);
 
   const handleUserUpdate = (u) => setUser(prev => ({ ...prev, ...u }));
 
@@ -1143,11 +1207,29 @@ if (!authReady) {
   );
 }
 
+if (isPasswordRecoveryView) {
+  return (
+    <>
+      <GlobalStyle theme={theme} />
+      <AuthPage
+        key="password-recovery"
+        sessionExpired={false}
+        initialMode="recovery"
+        initialInfo={authInfo || "Enter your new password to complete the reset."}
+        recoveryOnly
+        onPasswordResetComplete={handlePasswordResetComplete}
+        onCancelRecovery={handleCancelPasswordRecovery}
+      />
+      <PwaInstallPrompt show={showBanner} onInstall={install} onDismiss={dismissBanner} isInstalling={isInstalling} />
+    </>
+  );
+}
+
 if (!user) {
   return (
     <>
       <GlobalStyle theme={theme} />
-      <AuthPage sessionExpired={sessionExpired} />
+      <AuthPage key="auth" sessionExpired={sessionExpired} initialInfo={authInfo} />
       <PwaInstallPrompt show={showBanner} onInstall={install} onDismiss={dismissBanner} isInstalling={isInstalling} />
     </>
   );
@@ -1190,6 +1272,7 @@ if (!user) {
           {page === "rates"      && <RatesPage {...pp} user={user} />}
           {page === "finance"    && <FinancePage user={user} vendors={vendors} clients={clients} campaigns={campaigns} mpos={mpos} receivables={receivables} receivablesMeta={receivablesSync} onSaveReceivable={handleSaveReceivableRecord} onRemoveReceivable={handleRemoveReceivableRecord} onLogReceivablePayment={handleLogReceivablePayment} onUpdateReceivableStatus={handleUpdateReceivableStatus} />}
           {page === "mpo"        && <MPOPage {...pp} user={user} appSettings={appSettings} onBulkImportStateChange={handleMpoBulkImportStateChange} requestMpoRefresh={requestMpoRefresh} />}
+          {page === "compliance" && <CompliancePage {...pp} user={user} />}
           {page === "reports"    && <ReportsPage {...pp} activeOnly={activeOnly} fmtN={fmtN} MPO_STATUS_LABELS={MPO_STATUS_LABELS} PrintPreview={PrintPreview} buildCSV={buildCSV} />}
           {page === "settings"   && <SettingsPage user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} appSettings={appSettings} setAppSettings={setAppSettings} vendors={vendors} clients={clients} campaigns={campaigns} rates={rates} mpos={mpos} receivables={receivables} members={members} setMembers={setMembers} notifications={notifications} setNotifications={setNotifications} unreadNotifications={unreadNotifications} onMarkNotificationRead={handleMarkNotificationRead} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} initialSectionRequest={settingsOpenSection} />}
         </main>

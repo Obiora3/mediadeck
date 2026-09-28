@@ -21,6 +21,7 @@ const Sidebar = ({
     { id: "rates", icon: "💰", label: "Media Rates" },
     { id: "finance", icon: "💳", label: "Finance" },
     { id: "mpo", icon: "📄", label: "MPO Generator" },
+    { id: "compliance", icon: "✓", label: "Compliance" },
     { id: "reports", icon: "📊", label: "Reports" },
     { id: "settings", icon: "⚙️", label: "Settings", badge: unreadNotifications },
   ];
